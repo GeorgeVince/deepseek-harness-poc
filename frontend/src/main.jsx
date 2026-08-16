@@ -7,6 +7,7 @@ import {
   MessagePrimitive,
   ThreadPrimitive,
   useExternalStoreRuntime,
+  useMessagePartReasoning,
 } from "@assistant-ui/react";
 import "./styles.css";
 
@@ -76,42 +77,60 @@ const formatValue = (value) => {
   }
 };
 
-function ToolCall({ toolName, args, result, isError }) {
-  const name = toolName.replace("mcp__python__", "");
-  const purpose = typeof args?.purpose === "string" ? args.purpose : "";
-  const resultData = result === undefined ? {} : parseArgs(result);
+const withProcess = (parts) => {
+  const steps = [...new Set(parts
+    .filter((part) => part.type === "tool-call" && part.reasoning && !part.isError)
+    .map((part) => part.reasoning.replace(/\s+/g, " ").trim()))];
+  const content = parts.filter((part) => part.type !== "reasoning");
+  return steps.length ? [{ type: "reasoning", text: steps.join("\n"), status: { type: "running" } }, ...content] : content;
+};
+
+function ToolCall({ result, isError }) {
+  if (result === undefined) return null;
+  if (isError) return (
+    <details className="adjusted-attempt">
+      <summary><span aria-hidden="true" />Adjusted approach</summary>
+      <pre>{formatValue(result)}</pre>
+    </details>
+  );
+  const resultData = parseArgs(result);
   const artifacts = Array.isArray(resultData.artifacts) ? resultData.artifacts : [];
-  const status = result === undefined ? "Running" : isError ? "Failed" : "Completed";
+  if (artifacts.length === 0) return null;
   return (
-    <div className={`tool-call${isError ? " tool-error" : ""}`}>
-      <div className="tool-heading" aria-live="polite">
-        <span className="trace-label">Activity</span>
-        <strong>{status}</strong> {purpose || name.replaceAll("_", " ")}
-      </div>
-      {artifacts.length > 0 && <div className="tool-artifacts">
+    <div className="workbook-output">
+      <div className="workbook-heading"><span aria-hidden="true" />Workbook ready</div>
+      <div className="tool-artifacts">
         {artifacts.map((artifact) => (
           <a key={artifact.name} href={`/api/files/${encodeURIComponent(artifact.name)}`} download>
-            {artifact.change === "created" ? "Created" : "Updated"} {artifact.name} · {Math.ceil(artifact.size / 1024)} KB
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3.75h6.5L18 8.25v12H7zM13.5 3.75v4.5H18M9.5 16.25h6M9.5 12.75h6" /></svg>
+            <span><strong>{artifact.name}</strong><small>{artifact.change === "created" ? "Created" : "Updated"} · {Math.ceil(artifact.size / 1024)} KB</small></span>
+            <svg className="download-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v10m0 0 4-4m-4 4-4-4M5 19.5h14" /></svg>
           </a>
         ))}
-      </div>}
-      {(!purpose || result !== undefined) && <details className="technical-details" open={Boolean(isError)}>
-        <summary>Technical details</summary>
-        {!purpose && <pre>{formatValue(args)}</pre>}
-        {result !== undefined && <pre className="tool-result">{formatValue(result)}</pre>}
-      </details>}
+      </div>
     </div>
   );
 }
 
 const TextPart = () => <MessagePartPrimitive.Text className="message-text" />;
-const ReasoningPart = () => (
-  <div className="reasoning-part">
-    <span>Reasoning summary</span>
-    <MessagePartPrimitive.Text smooth={false} />
-  </div>
-);
-const messageParts = { Text: TextPart, Reasoning: ReasoningPart, Empty: () => <span className="thinking">Thinking…</span>, tools: { Fallback: ToolCall } };
+const ProcessPart = () => {
+  const { text, status } = useMessagePartReasoning();
+  const steps = text.split("\n").filter(Boolean);
+  const icon = <span className="process-icon" aria-hidden="true"><i /><i /><i /></span>;
+  if (status.type === "running") return (
+    <div className="process-live">
+      {icon}
+      <div><span className="process-label">Working</span>{steps.at(-1)}</div>
+    </div>
+  );
+  return (
+    <details className="process-history">
+      <summary>{icon}<span>Process</span><small>{steps.length} {steps.length === 1 ? "step" : "steps"}</small></summary>
+      <ol>{steps.map((step, index) => <li key={`${index}-${step}`}>{step}</li>)}</ol>
+    </details>
+  );
+};
+const messageParts = { Text: TextPart, Reasoning: ProcessPart, Empty: () => <span className="thinking">Thinking…</span>, tools: { Fallback: ToolCall } };
 
 function UserMessage() {
   return <MessagePrimitive.Root className="user-message"><MessagePrimitive.Parts components={messageParts} /></MessagePrimitive.Root>;
@@ -150,20 +169,18 @@ function ChatPane({ session, initialMessages, onSessionsChanged, onFilesChanged 
     initialMessages.map((message) => ({
       id: `db-${message.id}`,
       role: message.role,
-      content: [
-        ...(message.tool_calls || []).flatMap((call) => [
-          ...(call.reasoning ? [{ type: "reasoning", text: call.reasoning }] : []),
-          {
-            type: "tool-call",
-            toolCallId: call.id,
-            toolName: call.name,
-            args: parseArgs(call.arguments),
-            argsText: call.arguments || "{}",
-            ...(call.result !== null && { result: call.result, isError: call.is_error }),
-          },
-        ]),
+      content: withProcess([
+        ...(message.tool_calls || []).map((call) => ({
+          type: "tool-call",
+          toolCallId: call.id,
+          toolName: call.name,
+          args: parseArgs(call.arguments),
+          argsText: call.arguments || "{}",
+          reasoning: call.reasoning,
+          ...(call.result !== null && { result: call.result, isError: call.is_error }),
+        })),
         { type: "text", text: message.content },
-      ],
+      ]),
       createdAt: new Date(message.created_at),
       ...(message.role === "assistant" && { status: { type: "complete", reason: "unknown" } }),
     })),
@@ -192,24 +209,29 @@ function ChatPane({ session, initialMessages, onSessionsChanged, onFilesChanged 
     try {
       for await (const event of chatEvents(session.id, text)) {
         if (event.type === "tool_call") {
-          updateAssistant((message) => ({ ...message, content: [
+          updateAssistant((message) => ({ ...message, content: withProcess([
             ...message.content,
-            ...(event.data.reasoning ? [{ type: "reasoning", text: event.data.reasoning }] : []),
             {
               type: "tool-call",
               toolCallId: event.data.id,
               toolName: event.data.name,
               args: parseArgs(event.data.arguments),
               argsText: typeof event.data.arguments === "string" ? event.data.arguments : JSON.stringify(event.data.arguments),
+              reasoning: event.data.reasoning,
             },
-          ] }));
+          ]) }));
         }
         if (event.type === "tool_result") {
-          updateAssistant((message) => ({ ...message, content: message.content.map((part) =>
-            part.type === "tool-call" && part.toolCallId === event.data.id
-              ? { ...part, result: event.data.result, isError: event.data.is_error }
-              : part,
-          ) }));
+          updateAssistant((message) => {
+            const index = message.content.findIndex((part) => part.type === "tool-call" && part.toolCallId === event.data.id);
+            if (index < 0) return message;
+            const tool = { ...message.content[index], result: event.data.result, isError: event.data.is_error };
+            return { ...message, content: withProcess([
+              ...message.content.slice(0, index),
+              tool,
+              ...message.content.slice(index + 1),
+            ]) };
+          });
         }
         if (event.type === "assistant") {
           answered = true;

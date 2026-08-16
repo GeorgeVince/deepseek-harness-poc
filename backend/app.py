@@ -84,16 +84,9 @@ def resumed_prompt(message: str, history: list[dict[str, Any]]) -> str:
 
 
 def _public_tool_arguments(name: str, arguments: object) -> str:
-    if name.rsplit("__", 1)[-1] not in {"run_bash", "run_python"}:
-        return arguments if isinstance(arguments, str) else json.dumps(arguments, separators=(",", ":"))
-    try:
-        parsed = json.loads(arguments) if isinstance(arguments, str) else arguments
-    except (TypeError, json.JSONDecodeError):
-        parsed = None
-    purpose = parsed.get("purpose") if isinstance(parsed, dict) else None
-    if not isinstance(purpose, str) or not purpose.strip():
-        purpose = "Running a sandbox task"
-    return json.dumps({"purpose": purpose.strip()}, separators=(",", ":"))
+    if name.rsplit("__", 1)[-1] in {"run_bash", "run_python"}:
+        return "{}"
+    return arguments if isinstance(arguments, str) else json.dumps(arguments, separators=(",", ":"))
 
 
 def browser_event(notification: Notification) -> tuple[str, dict[str, Any]] | None:

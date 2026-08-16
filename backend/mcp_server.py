@@ -110,15 +110,6 @@ def _get_json(url: str) -> dict:
         raise RuntimeError("weather service is unavailable") from error
 
 
-def _purpose(value: str) -> str:
-    if not isinstance(value, str):
-        raise ValueError("purpose must contain 1 to 200 characters")
-    value = value.strip()
-    if not value or len(value) > 200:
-        raise ValueError("purpose must contain 1 to 200 characters")
-    return value
-
-
 def _workbooks(root: Path | None = None) -> dict[str, tuple[int, int]]:
     files = {}
     for path in (root or Path.cwd()).glob("*.xlsx"):
@@ -213,8 +204,7 @@ def get_uk_weather(location: str, month: str | None = None) -> dict:
     }
 
 
-def _run_with_artifacts(kind: str, purpose: str, code: str, timeout_seconds: int) -> dict:
-    _purpose(purpose)
+def _run_with_artifacts(kind: str, code: str, timeout_seconds: int) -> dict:
     before = _workbooks()
     result = _run_sandboxed(kind, code, timeout_seconds)
     if result.get("timed_out"):
@@ -227,15 +217,15 @@ def _run_with_artifacts(kind: str, purpose: str, code: str, timeout_seconds: int
 
 
 @server.tool
-def run_bash(purpose: str, command: str, timeout_seconds: int = 30) -> dict:
-    """Run Bash in the isolated workspace. Purpose is a brief user-facing explanation of what this call does and why; do not include code or private reasoning."""
-    return _run_with_artifacts("bash", purpose, command, timeout_seconds)
+def run_bash(command: str, timeout_seconds: int = 30) -> dict:
+    """Run Bash in the isolated workspace."""
+    return _run_with_artifacts("bash", command, timeout_seconds)
 
 
 @server.tool
-def run_python(purpose: str, code: str, timeout_seconds: int = 30) -> dict:
-    """Run Python in the isolated workspace. Purpose is a brief user-facing explanation of what this call does and why; do not include code or private reasoning. Formualizer 0.8.4 is installed for XLSX: use formualizer.load_workbook(path) or Workbook(), then write Workbook.to_xlsx_bytes() to a new /workspace file."""
-    return _run_with_artifacts("python", purpose, code, timeout_seconds)
+def run_python(code: str, timeout_seconds: int = 30) -> dict:
+    """Run Python in the isolated workspace. Formualizer 0.8.4 is installed for XLSX: use formualizer.load_workbook(path) or Workbook(), then write Workbook.to_xlsx_bytes() to a new /workspace file."""
+    return _run_with_artifacts("python", code, timeout_seconds)
 
 
 @server.tool
