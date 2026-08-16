@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import re
+import sys
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -133,14 +134,27 @@ def main() -> None:
     sessions = ROOT / ".dsh" / "sessions"
     sessions.mkdir(parents=True, exist_ok=True)
 
-    with DeepSeekHarness(
+    runtime = ROOT / "node_modules" / ".bin" / "dsh-jsonrpc-agent"
+    if not runtime.exists():
+        raise RuntimeError("Harness MCP workaround is not installed; run npm install")
+
+    harness = DeepSeekHarness(
         provider="openai-codex",
         model="gpt-5.6-sol",
         cwd=str(ROOT),
         session_root=str(sessions),
         cordis=str(ROOT / "poc.cordis.yml"),
-        env={"OPENAI_CODEX_TOKEN": token},
-    ) as harness:
+        runtime_bin=str(runtime),
+        env={
+            "OPENAI_CODEX_TOKEN": token,
+            "MCP_PYTHON": sys.executable,
+            "MCP_SERVER": str(ROOT / "mcp_server.py"),
+        },
+    )
+    # ponytail: rc.6 has no plugin-readiness handshake; give MCP discovery time.
+    harness.client.start()
+    time.sleep(2)
+    with harness:
         ChatHandler.harness = harness
         server = HTTPServer((args.host, args.port), ChatHandler)
         print(f"Chatbot: http://{args.host}:{args.port}")

@@ -3,7 +3,10 @@ name = "deepseek-harness-openai-poc"
 version = "0.1.0"
 description = "Python SDK chatbot POC using DeepSeek Harness and OpenAI OAuth"
 requires-python = ">=3.10"
-dependencies = ["deepseek-harness-sdk==0.1.0rc6"]
+dependencies = [
+  "deepseek-harness-sdk==0.1.0rc6",
+  "fastmcp==3.4.7",
+]
 
 [dependency-groups]
 dev = ["pytest>=8"]

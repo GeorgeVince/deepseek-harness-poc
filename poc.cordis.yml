@@ -16,12 +16,25 @@
   config:
     includeHarnessIdentity: false
     includeRuntimeContext: false
-    persona: You are a concise, helpful assistant.
+    persona: You are a concise, helpful assistant. You must use search_tools before call_tool whenever a tool could answer the request. Never guess a hidden tool name.
     workspaceContext: false
     skills:
       enabled: false
     toolBash: false
     toolJobs: false
+
+# rc.6's bundled Python runtime omits this plugin, so app.py launches the npm
+# JSON-RPC runtime until the next runtime wheel includes it.
+- id: mcp-python
+  name: '@deepseek-ai/dsh-mcp-client'
+  config:
+    serverName: python
+    transport: stdio
+    command: !!js process.env.MCP_PYTHON
+    args:
+      - !!js process.env.MCP_SERVER
+    cwd: !!js process.env.DSH_CWD
+    failOnStartupError: true
 
 - id: sessions
   name: '@deepseek-ai/dsh-session-persistence-jsonl'
