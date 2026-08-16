@@ -1,7 +1,7 @@
 COMPOSE = docker compose
 TEST_COMPOSE = $(COMPOSE) -p deepseek-harness-test -f compose.test.yml
 
-.PHONY: start stop restart rebuild logs status migrate test test-unit test-integration
+.PHONY: start stop restart rebuild clean logs status migrate test test-unit test-integration
 
 start:
 	$(COMPOSE) up -d --build
@@ -14,6 +14,10 @@ restart:
 
 rebuild:
 	$(COMPOSE) up -d --build --force-recreate
+
+clean:
+	$(COMPOSE) down -v --remove-orphans
+	$(TEST_COMPOSE) down -v --remove-orphans
 
 logs:
 	$(COMPOSE) logs -f
