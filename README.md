@@ -6,6 +6,8 @@ A small browser chatbot using:
 - pi's OpenAI OAuth login and `gpt-5.6-sol`
 - a Python FastMCP server
 - MCP tool discovery behind a fixed `search_tools` / `call_tool` interface
+- PostgreSQL session/message persistence managed by Alembic
+- local OpenTelemetry tracing with Arize Phoenix
 
 ## Run with Docker Compose
 
@@ -15,19 +17,35 @@ With an existing OpenAI login in pi:
 docker compose up --build
 ```
 
-Open <http://127.0.0.1:8000>. Compose mounts `~/.pi/agent` read-only for OAuth and persists sessions in `.dsh/`. FastMCP runs as a stdio child process inside the chatbot container, so it does not need a separate Compose service.
+Open the chatbot at <http://127.0.0.1:8000> and Phoenix at <http://127.0.0.1:6006>. Compose mounts `~/.pi/agent` read-only for OAuth, stores chats in `postgres_data`, traces in `phoenix_data`, and Harness conversation logs in `.dsh/`. Alembic migrations run automatically when the chatbot starts. FastMCP runs as a stdio child process inside that container, so it does not need a separate service.
 
 ## Run locally
 
 Requirements: [uv](https://docs.astral.sh/uv/), Node.js/npm, and an existing OpenAI login in pi.
 
 ```bash
+docker compose up -d postgres phoenix
+cd backend
+export DATABASE_URL=postgresql+psycopg://chatbot:chatbot@localhost/chatbot
 uv sync
 npm install
+uv run alembic upgrade head
 uv run python app.py
 ```
 
 If pi is not logged in, run pi and use `/login` to connect **OpenAI (ChatGPT Plus/Pro)**, then restart the app. Set `PI_AUTH_FILE` for a non-default local auth path; update the Compose volume for a non-default container path.
+
+## Arize Phoenix
+
+Phoenix is hosted locally by Compose with persistent SQLite storage and no account or API key. The backend sends only OpenInference LLM workflow traces to the `deepseek-harness-poc` project—ordinary HTTP requests and database queries are not traced.
+
+Each chat turn produces an `AGENT` span containing one `LLM` span per model step and one `TOOL` span per Harness tool call. Model/provider, token counts, finish reason, session ID, and tool status are recorded. Inputs, outputs, tool arguments, and tool results are captured by default, matching Phoenix's OpenAI Agents SDK integration; set `PHOENIX_CAPTURE_CONTENT=false` to redact that content.
+
+## Layout
+
+- `frontend/` — persistent-session browser UI
+- `backend/` — Python API, FastMCP tools, database schema, and Alembic migrations
+- `compose.yml` — chatbot, PostgreSQL, and local Arize Phoenix services
 
 ## Tool flow
 
@@ -44,10 +62,12 @@ Agent
 
 The npm JSON-RPC runtime is a temporary workaround: the `0.1.0rc6` Python runtime wheel omits `@deepseek-ai/dsh-mcp-client`. The application still uses the Python SDK; switch back to its bundled runtime once a wheel containing the MCP client is released.
 
-Conversation logs stay in the ignored `.dsh/sessions/` directory. The OAuth token is snapshotted at startup, so restart after pi refreshes it.
+The frontend restores the selected session and reloads its messages from PostgreSQL. After a backend restart, the first turn replays that PostgreSQL transcript into a fresh Harness runtime session; Harness's own logs remain in ignored `.dsh/sessions/`. The OAuth token is snapshotted at startup, so restart after pi refreshes it.
 
 ## Check
 
 ```bash
+cd backend
 uv run pytest
+DATABASE_URL=postgresql+psycopg://chatbot:chatbot@localhost/chatbot uv run alembic check
 ```

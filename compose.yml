@@ -1,13 +1,57 @@
 services:
+  phoenix:
+    image: arizephoenix/phoenix:20.2.1
+    ports:
+      - "127.0.0.1:${PHOENIX_PORT:-6006}:6006"
+      - "127.0.0.1:${PHOENIX_GRPC_PORT:-4317}:4317"
+    environment:
+      PHOENIX_WORKING_DIR: /mnt/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:6006/readyz')"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - phoenix_data:/mnt/data
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: chatbot
+      POSTGRES_USER: chatbot
+      POSTGRES_PASSWORD: chatbot
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U chatbot -d chatbot"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
   chatbot:
     build: .
     init: true
+    depends_on:
+      phoenix:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
     user: "${UID:-1000}:${GID:-1000}"
     ports:
       - "127.0.0.1:${PORT:-8000}:8000"
     environment:
       HOME: /tmp
       PI_AUTH_FILE: /pi-agent/auth.json
+      DATABASE_URL: postgresql+psycopg://chatbot:chatbot@postgres/chatbot
+      PHOENIX_COLLECTOR_ENDPOINT: http://phoenix:6006/v1/traces
+      PHOENIX_PROJECT: deepseek-harness-poc
+      PHOENIX_CAPTURE_CONTENT: ${PHOENIX_CAPTURE_CONTENT:-true}
     volumes:
       - "${HOME}/.pi/agent:/pi-agent:ro"
       - ./.dsh:/app/.dsh
+
+volumes:
+  phoenix_data:
+  postgres_data:

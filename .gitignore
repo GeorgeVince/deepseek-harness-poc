@@ -3,3 +3,5 @@ node_modules/
 .dsh/
 __pycache__/
 .pytest_cache/
+.env
+.env.phoenix

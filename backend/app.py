@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tiny browser chat backed by the DeepSeek Harness Python SDK."""
+"""Browser chat backed by DeepSeek Harness and PostgreSQL."""
 
 from __future__ import annotations
 
@@ -9,58 +9,22 @@ import os
 import re
 import sys
 import time
+import uuid
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from deepseek_harness import DeepSeekHarness
 
+import database
+import telemetry
+
 ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = ROOT.parent
+PAGE = (PROJECT_ROOT / "frontend" / "index.html").read_bytes()
 MAX_BODY_BYTES = 20_000
 MIN_TOKEN_LIFETIME_MS = 5 * 60 * 1000
-
-PAGE = b"""<!doctype html>
-<html lang="en">
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Harness + GPT-5.6</title>
-<style>
-  body { margin: 0; font: 16px system-ui; background: #f5f5f5; color: #171717 }
-  main { max-width: 760px; min-height: 100vh; margin: auto; display: grid; grid-template-rows: auto 1fr auto; background: white }
-  header { padding: 20px; border-bottom: 1px solid #ddd }
-  h1 { margin: 0; font-size: 20px } small { color: #666 }
-  #messages { padding: 20px; overflow: auto }
-  .message { max-width: 80%; margin: 10px 0; padding: 12px 15px; border-radius: 16px; white-space: pre-wrap }
-  .user { margin-left: auto; background: #171717; color: white }
-  .assistant { background: #eee }
-  form { display: flex; gap: 10px; padding: 16px; border-top: 1px solid #ddd }
-  input { flex: 1; padding: 12px; border: 1px solid #aaa; border-radius: 10px; font: inherit }
-  button { padding: 0 18px; border: 0; border-radius: 10px; background: #171717; color: white; font: inherit }
-  button:disabled { opacity: .5 }
-</style>
-<main>
-  <header><h1>DeepSeek Harness + GPT-5.6 Sol</h1><small>Python SDK / OpenAI OAuth</small></header>
-  <section id="messages" aria-live="polite"></section>
-  <form><label for="prompt" hidden>Message</label><input id="prompt" autocomplete="off" placeholder="Type a message..." required><button>Send</button></form>
-</main>
-<script>
-const form = document.querySelector('form'), input = document.querySelector('input'), button = document.querySelector('button'), messages = document.querySelector('#messages');
-const session_id = crypto.randomUUID();
-function add(text, role) { const el = document.createElement('div'); el.className = `message ${role}`; el.textContent = text; messages.append(el); el.scrollIntoView(); return el }
-form.addEventListener('submit', async event => {
-  event.preventDefault(); const message = input.value.trim(); if (!message) return;
-  add(message, 'user'); input.value = ''; button.disabled = input.disabled = true;
-  const pending = add('Thinking...', 'assistant');
-  try {
-    const response = await fetch('/api/chat', { method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({session_id, message}) });
-    const data = await response.json(); if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`); pending.textContent = data.response;
-  } catch (error) { pending.textContent = `Error: ${error.message}` }
-  finally { button.disabled = input.disabled = false; input.focus() }
-});
-input.focus();
-</script>
-</html>
-"""
 
 
 def read_pi_oauth(path: Path, now_ms: int) -> str:
@@ -74,30 +38,66 @@ def read_pi_oauth(path: Path, now_ms: int) -> str:
     return auth["access"]
 
 
-def parse_chat_request(raw: bytes) -> tuple[str, str]:
+def parse_session_id(value: object) -> uuid.UUID:
+    if not isinstance(value, str):
+        raise ValueError("session_id is invalid")
+    try:
+        return uuid.UUID(value)
+    except ValueError as error:
+        raise ValueError("session_id is invalid") from error
+
+
+def parse_chat_request(raw: bytes) -> tuple[str, uuid.UUID]:
     """Validate one browser request and return its message and session ID."""
     body = json.loads(raw)
     if not isinstance(body, dict):
         raise ValueError("Request must be a JSON object")
-    message, session_id = body.get("message"), body.get("session_id")
+    message = body.get("message")
     if not isinstance(message, str) or not message.strip():
         raise ValueError("message is required")
-    if not isinstance(session_id, str) or re.fullmatch(r"[A-Za-z0-9_-]{1,100}", session_id) is None:
-        raise ValueError("session_id is invalid")
-    return message.strip(), session_id
+    return message.strip(), parse_session_id(body.get("session_id"))
+
+
+def resumed_prompt(message: str, history: list[dict[str, Any]]) -> str:
+    if not history:
+        return message
+    transcript = [{"role": item["role"], "content": item["content"]} for item in history]
+    # ponytail: replay the full DB transcript on first use after restart; compact if histories become large.
+    return f"Continue the prior conversation below.\n\n{json.dumps(transcript)}\n\nCurrent user message:\n{message}"
 
 
 class ChatHandler(BaseHTTPRequestHandler):
     harness: DeepSeekHarness
+    harness_process_id: str
+    primed_sessions: set[uuid.UUID] = set()
 
     def do_GET(self) -> None:
-        if self.path != "/":
-            self.send_error(404)
+        path = urlparse(self.path).path
+        if path == "/":
+            self._send(200, "text/html; charset=utf-8", PAGE)
             return
-        self._send(200, "text/html; charset=utf-8", PAGE)
+        if path == "/api/sessions":
+            self._json(200, {"sessions": database.list_sessions()})
+            return
+        match = re.fullmatch(r"/api/sessions/([^/]+)/messages", path)
+        if match:
+            try:
+                session_id = parse_session_id(match.group(1))
+                if database.get_session(session_id) is None:
+                    self._json(404, {"error": "Session not found"})
+                else:
+                    self._json(200, {"messages": database.list_messages(session_id)})
+            except ValueError as error:
+                self._json(400, {"error": str(error)})
+            return
+        self.send_error(404)
 
     def do_POST(self) -> None:
-        if self.path != "/api/chat":
+        path = urlparse(self.path).path
+        if path == "/api/sessions":
+            self._json(201, database.create_session())
+            return
+        if path != "/api/chat":
             self.send_error(404)
             return
         try:
@@ -105,7 +105,18 @@ class ChatHandler(BaseHTTPRequestHandler):
             if not 0 < length <= MAX_BODY_BYTES:
                 raise ValueError("Invalid request size")
             message, session_id = parse_chat_request(self.rfile.read(length))
-            result = self.harness.run(message, session_id=session_id)
+            if database.get_session(session_id) is None:
+                self._json(404, {"error": "Session not found"})
+                return
+            history = database.list_messages(session_id)
+            prompt = message if session_id in self.primed_sessions else resumed_prompt(message, history)
+            database.add_message(session_id, "user", message)
+            runtime_session_id = f"{session_id.hex}-{self.harness_process_id}"
+            result = telemetry.run_agent(self.harness, prompt, runtime_session_id, str(session_id))
+            if result.finish_reason == "error" or not result.final_response:
+                raise RuntimeError("Agent turn failed")
+            self.primed_sessions.add(session_id)
+            database.add_message(session_id, "assistant", result.final_response)
             self._json(200, {"response": result.final_response, "finish_reason": result.finish_reason})
         except (ValueError, json.JSONDecodeError) as error:
             self._json(400, {"error": str(error)})
@@ -129,10 +140,12 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args()
 
+    tracer_provider = telemetry.configure()
+
     auth_file = Path(os.environ.get("PI_AUTH_FILE", "~/.pi/agent/auth.json")).expanduser()
     token = read_pi_oauth(auth_file, int(time.time() * 1000))
-    sessions = ROOT / ".dsh" / "sessions"
-    sessions.mkdir(parents=True, exist_ok=True)
+    session_root = PROJECT_ROOT / ".dsh" / "sessions"
+    session_root.mkdir(parents=True, exist_ok=True)
 
     runtime = ROOT / "node_modules" / ".bin" / "dsh-jsonrpc-agent"
     if not runtime.exists():
@@ -141,8 +154,8 @@ def main() -> None:
     harness = DeepSeekHarness(
         provider="openai-codex",
         model="gpt-5.6-sol",
-        cwd=str(ROOT),
-        session_root=str(sessions),
+        cwd=str(PROJECT_ROOT),
+        session_root=str(session_root),
         cordis=str(ROOT / "poc.cordis.yml"),
         runtime_bin=str(runtime),
         env={
@@ -152,10 +165,12 @@ def main() -> None:
         },
     )
     # ponytail: rc.6 has no plugin-readiness handshake; give MCP discovery time.
-    harness.client.start()
-    time.sleep(2)
+    harness.start()
+    time.sleep(5)
     with harness:
         ChatHandler.harness = harness
+        ChatHandler.harness_process_id = uuid.uuid4().hex[:12]
+        ChatHandler.primed_sessions = set()
         server = HTTPServer((args.host, args.port), ChatHandler)
         print(f"Chatbot: http://{args.host}:{args.port}")
         try:
@@ -164,6 +179,7 @@ def main() -> None:
             pass
         finally:
             server.server_close()
+    tracer_provider.shutdown()
 
 
 if __name__ == "__main__":

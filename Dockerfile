@@ -2,13 +2,15 @@ FROM node:24-bookworm-slim
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 ENV UV_PYTHON_INSTALL_DIR=/opt/uv/python
-WORKDIR /app
+WORKDIR /app/backend
 
-COPY pyproject.toml uv.lock .python-version package.json package-lock.json ./
+COPY backend/pyproject.toml backend/uv.lock backend/.python-version backend/package.json backend/package-lock.json ./
 RUN uv sync --frozen --no-dev && npm ci --omit=dev --no-audit --no-fund
 
-COPY app.py mcp_server.py poc.cordis.yml ./
-ENV PATH="/app/.venv/bin:$PATH"
+COPY backend/app.py backend/database.py backend/mcp_server.py backend/telemetry.py backend/poc.cordis.yml backend/alembic.ini ./
+COPY backend/migrations ./migrations
+COPY frontend /app/frontend
+ENV PATH="/app/backend/.venv/bin:$PATH"
 
 EXPOSE 8000
-CMD ["/app/.venv/bin/python", "app.py", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["sh", "-c", "alembic upgrade head && exec /app/backend/.venv/bin/python app.py --host 0.0.0.0 --port 8000"]

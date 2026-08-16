@@ -1,4 +1,5 @@
 .git
+.env*
 .dsh
 .venv
 node_modules

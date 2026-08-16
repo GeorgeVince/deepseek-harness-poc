@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Harness + GPT-5.6</title>
+<style>
+  * { box-sizing: border-box }
+  body { margin: 0; min-height: 100vh; font: 16px system-ui; background: #f5f5f5; color: #171717; display: grid; grid-template-columns: 260px 1fr }
+  aside { height: 100vh; padding: 14px; background: #171717; color: white; overflow: auto }
+  aside h1 { margin: 4px 6px 16px; font-size: 17px }
+  button { font: inherit; cursor: pointer }
+  #new-chat { width: 100%; padding: 10px; border: 1px solid #666; border-radius: 9px; color: white; background: #292929 }
+  #session-list { display: grid; gap: 4px; margin-top: 14px }
+  .session { overflow: hidden; padding: 10px; border: 0; border-radius: 8px; color: #ddd; background: transparent; text-align: left; text-overflow: ellipsis; white-space: nowrap }
+  .session:hover, .session.active { background: #333; color: white }
+  main { width: min(800px, 100%); height: 100vh; margin: auto; display: grid; grid-template-rows: auto 1fr auto; background: white }
+  header { padding: 18px 20px; border-bottom: 1px solid #ddd }
+  header h2 { overflow: hidden; margin: 0; font-size: 19px; text-overflow: ellipsis; white-space: nowrap }
+  header small { color: #666 }
+  #messages { padding: 20px; overflow: auto }
+  .empty { margin-top: 25vh; color: #777; text-align: center }
+  .message { width: fit-content; max-width: 82%; margin: 10px 0; padding: 12px 15px; border-radius: 16px; white-space: pre-wrap; overflow-wrap: anywhere }
+  .user { margin-left: auto; background: #171717; color: white }
+  .assistant { background: #eee }
+  form { display: flex; gap: 10px; padding: 16px; border-top: 1px solid #ddd }
+  input { flex: 1; min-width: 0; padding: 12px; border: 1px solid #aaa; border-radius: 10px; font: inherit }
+  form button { padding: 0 18px; border: 0; border-radius: 10px; background: #171717; color: white }
+  button:disabled, input:disabled { cursor: default; opacity: .5 }
+  @media (max-width: 700px) {
+    body { grid-template-columns: 110px 1fr }
+    aside { padding: 8px }
+    aside h1 { font-size: 14px }
+    .session { font-size: 13px; padding: 9px 6px }
+    #new-chat { font-size: 13px }
+  }
+</style>
+<aside>
+  <h1>Harness Chat</h1>
+  <button id="new-chat" type="button">+ New chat</button>
+  <nav id="session-list" aria-label="Chat sessions"></nav>
+</aside>
+<main>
+  <header><h2 id="chat-title">New chat</h2><small>Python · PostgreSQL · FastMCP</small></header>
+  <section id="messages" aria-live="polite"></section>
+  <form>
+    <label for="prompt" hidden>Message</label>
+    <input id="prompt" autocomplete="off" placeholder="Type a message..." required>
+    <button>Send</button>
+  </form>
+</main>
+<script>
+const form = document.querySelector('form'), input = document.querySelector('#prompt'), send = form.querySelector('button');
+const messages = document.querySelector('#messages'), sessionList = document.querySelector('#session-list');
+const newChat = document.querySelector('#new-chat'), chatTitle = document.querySelector('#chat-title');
+let sessions = [], currentSession = localStorage.getItem('session_id'), busy = false;
+
+async function api(path, options) {
+  const response = await fetch(path, options);
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+  return data;
+}
+function addMessage(text, role) {
+  messages.querySelector('.empty')?.remove();
+  const el = document.createElement('div');
+  el.className = `message ${role}`; el.textContent = text;
+  messages.append(el); el.scrollIntoView(); return el;
+}
+function setBusy(value) {
+  busy = value; input.disabled = send.disabled = newChat.disabled = value;
+  sessionList.querySelectorAll('button').forEach(button => button.disabled = value);
+}
+function renderSessions() {
+  sessionList.replaceChildren();
+  for (const session of sessions) {
+    const button = document.createElement('button');
+    button.type = 'button'; button.className = `session${session.id === currentSession ? ' active' : ''}`;
+    button.textContent = session.title; button.title = session.title; button.disabled = busy;
+    button.addEventListener('click', () => openSession(session.id));
+    sessionList.append(button);
+  }
+  chatTitle.textContent = sessions.find(session => session.id === currentSession)?.title || 'New chat';
+}
+async function refreshSessions() {
+  sessions = (await api('/api/sessions')).sessions;
+  renderSessions();
+}
+async function openSession(id) {
+  if (busy) return;
+  currentSession = id; localStorage.setItem('session_id', id); renderSessions();
+  const data = await api(`/api/sessions/${id}/messages`);
+  messages.replaceChildren();
+  data.messages.forEach(message => addMessage(message.content, message.role));
+  if (!data.messages.length) {
+    const empty = document.createElement('p'); empty.className = 'empty'; empty.textContent = 'Start a conversation'; messages.append(empty);
+  }
+  input.focus();
+}
+async function createSession() {
+  const session = await api('/api/sessions', {method: 'POST'});
+  sessions.unshift(session); await openSession(session.id);
+}
+newChat.addEventListener('click', createSession);
+form.addEventListener('submit', async event => {
+  event.preventDefault(); const message = input.value.trim(); if (!message || !currentSession) return;
+  addMessage(message, 'user'); input.value = ''; setBusy(true);
+  const pending = addMessage('Thinking...', 'assistant');
+  try {
+    const data = await api('/api/chat', {
+      method: 'POST', headers: {'content-type': 'application/json'},
+      body: JSON.stringify({session_id: currentSession, message}),
+    });
+    pending.textContent = data.response; await refreshSessions();
+  } catch (error) { pending.textContent = `Error: ${error.message}` }
+  finally { setBusy(false); input.focus() }
+});
+(async () => {
+  try {
+    await refreshSessions();
+    if (!sessions.length) await createSession();
+    else await openSession(sessions.some(session => session.id === currentSession) ? currentSession : sessions[0].id);
+  } catch (error) { messages.textContent = `Failed to load sessions: ${error.message}` }
+})();
+</script>
+</html>

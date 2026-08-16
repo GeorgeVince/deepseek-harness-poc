@@ -4,9 +4,16 @@ version = "0.1.0"
 description = "Python SDK chatbot POC using DeepSeek Harness and OpenAI OAuth"
 requires-python = ">=3.10"
 dependencies = [
+  "alembic>=1.14,<2",
+  "arize-phoenix-otel>=0.16",
   "deepseek-harness-sdk==0.1.0rc6",
   "fastmcp==3.4.7",
+  "psycopg[binary]>=3.2,<4",
+  "sqlalchemy>=2.0,<3",
 ]
 
 [dependency-groups]
 dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
