@@ -7,59 +7,12 @@ from typing import Any
 import psycopg
 from psycopg.rows import dict_row
 
-SCHEMA = (
-    """
-    CREATE TABLE IF NOT EXISTS sessions (
-        id UUID PRIMARY KEY,
-        title TEXT NOT NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-    )
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS messages (
-        id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-        session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-        turn_id UUID,
-        role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
-        content TEXT NOT NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-    )
-    """,
-    "ALTER TABLE messages ADD COLUMN IF NOT EXISTS turn_id UUID",
-    "CREATE INDEX IF NOT EXISTS messages_session_id_id_idx ON messages (session_id, id)",
-    """
-    CREATE TABLE IF NOT EXISTS tool_calls (
-        id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-        session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-        turn_id UUID NOT NULL,
-        call_id TEXT NOT NULL,
-        agent_session_id TEXT NOT NULL,
-        name TEXT NOT NULL,
-        arguments TEXT,
-        result TEXT,
-        is_error BOOLEAN,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-        completed_at TIMESTAMPTZ,
-        UNIQUE (session_id, call_id)
-    )
-    """,
-    "CREATE INDEX IF NOT EXISTS tool_calls_session_turn_idx ON tool_calls (session_id, turn_id, id)",
-)
-
-
 def connect():
     url = os.environ.get("DATABASE_URL")
     if not url:
         raise RuntimeError("DATABASE_URL is required")
     # ponytail: one connection per operation; add a pool if measured load warrants it.
     return psycopg.connect(url, row_factory=dict_row)
-
-
-def initialize() -> None:
-    with connect() as connection:
-        for statement in SCHEMA:
-            connection.execute(statement)
 
 
 def _session(row: dict[str, Any]) -> dict[str, Any]:

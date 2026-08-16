@@ -4,7 +4,8 @@ import database
 
 
 def test_database_round_trip() -> None:
-    database.initialize()
+    with database.connect() as connection:
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260816_0002"
     created = database.create_session()
     session_id = uuid.UUID(created["id"])
 

@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Python SDK chatbot POC using DeepSeek Harness and OpenAI credentials"
 requires-python = ">=3.10"
 dependencies = [
+  "alembic>=1.14,<2",
   "arize-phoenix-otel>=0.16",
   "deepseek-harness-sdk==0.1.0rc6",
   "fastapi>=0.115,<1",
@@ -11,6 +12,7 @@ dependencies = [
   "psycopg[binary]>=3.2,<4",
   "python-dotenv>=1.0,<2",
   "python-multipart>=0.0.18,<1",
+  "sqlalchemy>=2,<3",
   "uvicorn>=0.30,<1",
 ]
 

@@ -205,7 +205,6 @@ def chat_events(state: Any, chat_id: uuid.UUID, message: str, history: list[dict
 async def lifespan(app: FastAPI):
     load_dotenv(PROJECT_ROOT / ".env")
     provider, model = llm_config(os.environ)
-    database.initialize()
     tracer_provider = telemetry.configure()
 
     session_root = PROJECT_ROOT / ".dsh" / "sessions"

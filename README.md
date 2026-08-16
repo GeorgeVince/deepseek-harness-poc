@@ -37,7 +37,7 @@ A token selects the `openai-codex` route; an API key selects the standard `opena
 docker compose up --build
 ```
 
-Open the chatbot at <http://127.0.0.1:8000> and Phoenix at <http://127.0.0.1:6006>. Compose stores chats in `postgres_data`, traces in `phoenix_data`, the agent's writable files in `agent_workspace`, and Harness conversation logs in `.dsh/`. The chatbot creates its tables at startup. FastMCP runs as a stdio child process inside the chatbot container and calls the sandbox sidecar over a shared Unix socket.
+Open the chatbot at <http://127.0.0.1:8000> and Phoenix at <http://127.0.0.1:6006>. Compose stores chats in `postgres_data`, traces in `phoenix_data`, the agent's writable files in `agent_workspace`, and Harness conversation logs in `.dsh/`. Alembic migrations run automatically before the chatbot starts. FastMCP runs as a stdio child process inside the chatbot container and calls the sandbox sidecar over a shared Unix socket.
 
 The coordinator's `run_bash` and `run_python` tools execute in a credential-free sidecar with no network. Its root filesystem is read-only; only `/workspace` and ephemeral `/tmp` are writable. Bubblewrap adds a private PID, mount, IPC, and network namespace per command. Compose also caps the sidecar at one CPU, 256 MB, 64 processes, 30 seconds, 64 MB output files, and a 32 KB returned-output tail. Specialist agents retain their existing tool allowlists and cannot execute code.
 
@@ -56,6 +56,7 @@ cd ../backend
 export DATABASE_URL=postgresql://chatbot:chatbot@localhost/chatbot
 uv sync
 npm install
+uv run alembic upgrade head
 uv run python app.py
 ```
 
@@ -81,7 +82,7 @@ Each chat turn produces an `AGENT` span containing one `LLM` span per model step
 ## Layout
 
 - `frontend/` — Vite/React persistent-session UI built with assistant-ui
-- `backend/` — Python API, FastMCP tools, sandbox runner, database schema, and tests
+- `backend/` — Python API, FastMCP tools, sandbox runner, Alembic migrations, and tests
 - `compose.yml` — chatbot, sandbox sidecar, PostgreSQL, and local Arize Phoenix services
 - `compose.test.yml` — Docker Compose integration-test runner
 
@@ -109,4 +110,4 @@ make test-integration  # isolated PostgreSQL via Docker Compose
 make test              # both
 ```
 
-Unit tests live in `backend/tests/unit/`. Integration tests live in `backend/tests/integration/`; they run only in the Compose test container against a fresh PostgreSQL service.
+Unit tests live in `backend/tests/unit/`. Integration tests live in `backend/tests/integration/`; they run only in the Compose test container after migrating a fresh PostgreSQL service.

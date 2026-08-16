@@ -17,18 +17,19 @@ WORKDIR /app/backend
 COPY backend/pyproject.toml backend/uv.lock backend/.python-version backend/package.json backend/package-lock.json ./
 RUN uv sync --frozen --no-dev && npm ci --omit=dev --no-audit --no-fund
 
-COPY backend/app.py backend/database.py backend/mcp_server.py backend/telemetry.py backend/poc.cordis.yml ./
+COPY backend/app.py backend/database.py backend/mcp_server.py backend/telemetry.py backend/poc.cordis.yml backend/alembic.ini ./
+COPY backend/migrations ./migrations
 COPY --from=frontend /app/frontend/dist /app/frontend/dist
 ENV PATH="/app/backend/.venv/bin:$PATH"
 
 FROM base AS test
 RUN uv sync --frozen
 COPY backend/tests ./tests
-CMD ["pytest", "-q", "tests/integration"]
+CMD ["sh", "-c", "alembic upgrade head && pytest -q tests/integration"]
 
 FROM base AS production
 EXPOSE 8000
-CMD ["python", "app.py", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["sh", "-c", "alembic upgrade head && exec python app.py --host 0.0.0.0 --port 8000"]
 
 FROM python:3.12-slim-bookworm AS sandbox-runner
 RUN apt-get update && apt-get install -y --no-install-recommends bash bubblewrap && rm -rf /var/lib/apt/lists/* \

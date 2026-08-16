@@ -1,7 +1,7 @@
 COMPOSE = docker compose
 TEST_COMPOSE = $(COMPOSE) -p deepseek-harness-test -f compose.test.yml
 
-.PHONY: start stop restart rebuild logs status test test-unit test-integration
+.PHONY: start stop restart rebuild logs status migrate test test-unit test-integration
 
 start:
 	$(COMPOSE) up -d --build
@@ -20,6 +20,9 @@ logs:
 
 status:
 	$(COMPOSE) ps
+
+migrate:
+	cd backend && uv run alembic upgrade head
 
 test: test-unit test-integration
 
