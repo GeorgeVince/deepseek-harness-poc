@@ -3,13 +3,14 @@ import json
 import uuid
 
 import pytest
+from deepseek_harness import Notification
 from fastmcp import Client
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 import telemetry
-from app import llm_config, parse_chat_request, resumed_prompt
+from app import browser_event, llm_config, parse_chat_request, resumed_prompt, sse_frame
 from database import _title
 from mcp_server import gateway
 
@@ -31,6 +32,26 @@ def test_parse_chat_request_validates_input() -> None:
     assert _title("a " * 40).endswith("...")
     prompt = resumed_prompt("What was it?", [{"role": "user", "content": "Remember ORCHID"}])
     assert "Remember ORCHID" in prompt and "What was it?" in prompt
+
+
+def test_harness_events_become_browser_sse() -> None:
+    call = Notification("session.event", {"event": {
+        "type": "tool/call", "data": {"callId": "call-1", "name": "search_tools", "arguments": '{"query":"clock"}'},
+    }})
+    result = Notification("session.event", {"event": {
+        "type": "tool/result", "data": {"message": {
+            "source": {"callId": "call-1"},
+            "content": [{"type": "tool-result", "isError": False, "content": [{"type": "text", "text": "found"}]}],
+        }},
+    }})
+    assistant = Notification("session.event", {"event": {
+        "type": "assistant/message", "data": {"message": {"content": [{"type": "text", "text": "Done"}]}},
+    }})
+
+    assert browser_event(call) == ("tool_call", {"id": "call-1", "name": "search_tools", "arguments": '{"query":"clock"}'})
+    assert browser_event(result) == ("tool_result", {"id": "call-1", "result": "found", "is_error": False})
+    assert browser_event(assistant) == ("assistant", {"text": "Done"})
+    assert sse_frame("done", {"response": "Hi\nthere"}) == b'event: done\ndata: {"response":"Hi\\nthere"}\n\n'
 
 
 def test_harness_events_become_only_llm_and_tool_spans() -> None:

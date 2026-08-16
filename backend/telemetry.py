@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Callable
 from typing import Any
 
-from deepseek_harness import DeepSeekHarness, RunResult
+from deepseek_harness import DeepSeekHarness, Notification, RunResult
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 from phoenix.otel import OpenInferenceMimeTypeValues, OpenInferenceSpanKindValues, SpanAttributes, register
@@ -23,7 +24,13 @@ def configure():
     )
 
 
-def run_agent(harness: DeepSeekHarness, prompt: str, runtime_session_id: str, session_id: str) -> RunResult:
+def run_agent(
+    harness: DeepSeekHarness,
+    prompt: str,
+    runtime_session_id: str,
+    session_id: str,
+    on_notification: Callable[[Notification], None] | None = None,
+) -> RunResult:
     capture_content = os.environ.get("PHOENIX_CAPTURE_CONTENT", "true").lower() not in {"0", "false", "no"}
     attributes: dict[str, Any] = {
         SpanAttributes.OPENINFERENCE_SPAN_KIND: OpenInferenceSpanKindValues.AGENT.value,
@@ -38,7 +45,7 @@ def run_agent(harness: DeepSeekHarness, prompt: str, runtime_session_id: str, se
         )
 
     with TRACER.start_as_current_span("DeepSeek Harness", attributes=attributes) as span:
-        result = harness.run(prompt, session_id=runtime_session_id)
+        result = harness.run(prompt, session_id=runtime_session_id, on_notification=on_notification)
         _record_children(result.events, prompt, session_id, capture_content)
         span.set_attribute("agent.finish_reason", result.finish_reason or "unknown")
         if capture_content:

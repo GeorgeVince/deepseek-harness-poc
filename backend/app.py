@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from deepseek_harness import DeepSeekHarness
+from deepseek_harness import DeepSeekHarness, Notification
 from dotenv import load_dotenv
 
 import database
@@ -67,6 +67,40 @@ def resumed_prompt(message: str, history: list[dict[str, Any]]) -> str:
     return f"Continue the prior conversation below.\n\n{json.dumps(transcript)}\n\nCurrent user message:\n{message}"
 
 
+def browser_event(notification: Notification) -> tuple[str, dict[str, Any]] | None:
+    """Turn useful Harness notifications into the browser's small event vocabulary."""
+    if notification.method != "session.event":
+        return None
+    event = notification.payload.get("event")
+    if not isinstance(event, dict) or not isinstance(event.get("data"), dict):
+        return None
+    kind, data = event.get("type"), event["data"]
+    if kind == "tool/call":
+        return "tool_call", {
+            "id": data.get("callId"),
+            "name": data.get("name") or "tool",
+            "arguments": data.get("arguments"),
+        }
+    if kind == "tool/result":
+        output, is_error, call_id = telemetry._tool_output(data)
+        return "tool_result", {"id": call_id, "result": output, "is_error": is_error}
+    if kind == "assistant/message":
+        message = data.get("message")
+        blocks = message.get("content") if isinstance(message, dict) else None
+        text = "".join(
+            str(block.get("text") or "")
+            for block in blocks or []
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+        if text:
+            return "assistant", {"text": text}
+    return None
+
+
+def sse_frame(event: str, data: dict[str, Any]) -> bytes:
+    return f"event: {event}\ndata: {json.dumps(data, separators=(',', ':'))}\n\n".encode()
+
+
 class ChatHandler(BaseHTTPRequestHandler):
     harness: DeepSeekHarness
     harness_process_id: str
@@ -110,19 +144,50 @@ class ChatHandler(BaseHTTPRequestHandler):
                 self._json(404, {"error": "Session not found"})
                 return
             history = database.list_messages(session_id)
+        except (ValueError, json.JSONDecodeError) as error:
+            self._json(400, {"error": str(error)})
+            return
+        except Exception as error:
+            self._json(500, {"error": str(error)})
+            return
+
+        self.send_response(200)
+        self.send_header("content-type", "text/event-stream; charset=utf-8")
+        self.send_header("cache-control", "no-cache")
+        self.send_header("connection", "close")
+        self.send_header("x-accel-buffering", "no")
+        self.end_headers()
+        self.close_connection = True
+        self._sse("status", {"text": "Thinking…"})
+        try:
             prompt = message if session_id in self.primed_sessions else resumed_prompt(message, history)
             database.add_message(session_id, "user", message)
             runtime_session_id = f"{session_id.hex}-{self.harness_process_id}"
-            result = telemetry.run_agent(self.harness, prompt, runtime_session_id, str(session_id))
+
+            def emit(notification: Notification) -> None:
+                if notification.payload.get("sessionId") != runtime_session_id:
+                    return
+                event = browser_event(notification)
+                if event:
+                    self._sse(*event)
+
+            result = telemetry.run_agent(
+                self.harness, prompt, runtime_session_id, str(session_id), on_notification=emit
+            )
             if result.finish_reason == "error" or not result.final_response:
                 raise RuntimeError("Agent turn failed")
             self.primed_sessions.add(session_id)
             database.add_message(session_id, "assistant", result.final_response)
-            self._json(200, {"response": result.final_response, "finish_reason": result.finish_reason})
-        except (ValueError, json.JSONDecodeError) as error:
-            self._json(400, {"error": str(error)})
+            self._sse("done", {"response": result.final_response, "finish_reason": result.finish_reason})
         except Exception as error:
-            self._json(500, {"error": str(error)})
+            self._sse("error", {"error": str(error)})
+
+    def _sse(self, event: str, value: dict[str, Any]) -> None:
+        try:
+            self.wfile.write(sse_frame(event, value))
+            self.wfile.flush()
+        except OSError:
+            pass
 
     def _json(self, status: int, value: dict[str, Any]) -> None:
         self._send(status, "application/json", json.dumps(value).encode())

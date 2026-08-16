@@ -22,6 +22,11 @@
   .message { width: fit-content; max-width: 82%; margin: 10px 0; padding: 12px 15px; border-radius: 16px; white-space: pre-wrap; overflow-wrap: anywhere }
   .user { margin-left: auto; background: #171717; color: white }
   .assistant { background: #eee }
+  .status, .tool { max-width: 82%; margin: 10px 0; color: #666; font-size: 14px }
+  .tool { padding: 10px 12px; border: 1px solid #ddd; border-radius: 10px; background: #fafafa }
+  .tool summary { cursor: pointer; font-weight: 600 }
+  .tool pre { margin: 8px 0 0; white-space: pre-wrap; overflow-wrap: anywhere }
+  .tool-result { padding-top: 8px; border-top: 1px solid #ddd; margin-top: 8px }
   form { display: flex; gap: 10px; padding: 16px; border-top: 1px solid #ddd }
   input { flex: 1; min-width: 0; padding: 12px; border: 1px solid #aaa; border-radius: 10px; font: inherit }
   form button { padding: 0 18px; border: 0; border-radius: 10px; background: #171717; color: white }
@@ -59,6 +64,29 @@ async function api(path, options) {
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
   return data;
+}
+async function* chatEvents(message) {
+  const response = await fetch('/api/chat', {
+    method: 'POST', headers: {'content-type': 'application/json'},
+    body: JSON.stringify({session_id: currentSession, message}),
+  });
+  if (!response.ok) {
+    const data = await response.json(); throw new Error(data.error || `HTTP ${response.status}`);
+  }
+  const reader = response.body.getReader(), decoder = new TextDecoder(); let buffer = '';
+  while (true) {
+    const {value, done} = await reader.read(); buffer += decoder.decode(value || new Uint8Array(), {stream: !done});
+    const frames = buffer.replaceAll('\r\n', '\n').split('\n\n'); buffer = frames.pop();
+    for (const frame of frames) {
+      let type = 'message'; const data = [];
+      for (const line of frame.split('\n')) {
+        if (line.startsWith('event:')) type = line.slice(6).trim();
+        if (line.startsWith('data:')) data.push(line.slice(5).trimStart());
+      }
+      if (data.length) yield {type, data: JSON.parse(data.join('\n'))};
+    }
+    if (done) break;
+  }
 }
 function addMessage(text, role) {
   messages.querySelector('.empty')?.remove();
@@ -104,14 +132,34 @@ newChat.addEventListener('click', createSession);
 form.addEventListener('submit', async event => {
   event.preventDefault(); const message = input.value.trim(); if (!message || !currentSession) return;
   addMessage(message, 'user'); input.value = ''; setBusy(true);
-  const pending = addMessage('Thinking...', 'assistant');
+  const status = document.createElement('div'), tools = new Map();
+  status.className = 'status'; status.textContent = 'Connecting…'; messages.append(status);
+  let answered = false, finished = false;
   try {
-    const data = await api('/api/chat', {
-      method: 'POST', headers: {'content-type': 'application/json'},
-      body: JSON.stringify({session_id: currentSession, message}),
-    });
-    pending.textContent = data.response; await refreshSessions();
-  } catch (error) { pending.textContent = `Error: ${error.message}` }
+    for await (const event of chatEvents(message)) {
+      if (event.type === 'status') status.textContent = event.data.text;
+      if (event.type === 'tool_call') {
+        const tool = document.createElement('details'), summary = document.createElement('summary'), args = document.createElement('pre');
+        tool.className = 'tool'; tool.dataset.name = event.data.name; tool.open = true; summary.textContent = `Calling ${event.data.name}…`;
+        args.textContent = typeof event.data.arguments === 'string' ? event.data.arguments : JSON.stringify(event.data.arguments, null, 2);
+        tool.append(summary, args); messages.append(tool); tools.set(event.data.id, tool); tool.scrollIntoView();
+      }
+      if (event.type === 'tool_result') {
+        const tool = tools.get(event.data.id);
+        if (tool) {
+          tool.querySelector('summary').textContent = `${event.data.is_error ? 'Failed' : 'Finished'} ${tool.dataset.name}`;
+          const result = document.createElement('pre'); result.className = 'tool-result'; result.textContent = event.data.result; tool.append(result);
+        }
+      }
+      if (event.type === 'assistant') { status.remove(); addMessage(event.data.text, 'assistant'); answered = true }
+      if (event.type === 'done') {
+        finished = true; status.remove(); if (!answered) addMessage(event.data.response, 'assistant');
+      }
+      if (event.type === 'error') throw new Error(event.data.error);
+    }
+    if (!finished) throw new Error('Chat stream closed unexpectedly');
+    await refreshSessions();
+  } catch (error) { status.remove(); addMessage(`Error: ${error.message}`, 'assistant') }
   finally { setBusy(false); input.focus() }
 });
 (async () => {
