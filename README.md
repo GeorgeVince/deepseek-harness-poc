@@ -100,7 +100,7 @@ The coordinator delegates to fresh in-process Harness agents with separate perso
 
 The npm JSON-RPC runtime is a temporary workaround: the `0.1.0rc6` Python runtime wheel omits `@deepseek-ai/dsh-mcp-client`. The application still uses the Python SDK; switch back to its bundled runtime once a wheel containing the MCP client is released.
 
-The frontend restores messages and tool calls from PostgreSQL. Tool activity, results, errors, and nested specialist calls are grouped by turn and rendered as a persisted activity trace; this is observable execution data, not private model chain-of-thought. Sandbox activity shows its user-facing purpose and downloadable workbook artifacts, with technical results collapsed unless a call fails. After a backend restart, the first turn replays the message transcript into a fresh Harness runtime session; Harness's full logs remain in ignored `.dsh/sessions/`. Restart the backend after changing credentials.
+The frontend restores messages and tool calls from PostgreSQL. Provider-exposed reasoning summaries, tool activity, results, errors, and nested specialist calls are grouped by turn and rendered as a persisted activity trace. These short summaries are not the model's private chain-of-thought. Sandbox activity shows its user-facing purpose and downloadable workbook artifacts, with technical results collapsed unless a call fails. After a backend restart, the first turn replays the message transcript into a fresh Harness runtime session; Harness's full logs remain in ignored `.dsh/sessions/`. Restart the backend after changing credentials.
 
 ## Test
 

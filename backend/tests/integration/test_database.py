@@ -5,7 +5,7 @@ import database
 
 def test_database_round_trip() -> None:
     with database.connect() as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260816_0002"
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260816_0003"
     created = database.create_session()
     session_id = uuid.UUID(created["id"])
 
@@ -15,7 +15,13 @@ def test_database_round_trip() -> None:
         turn_id = uuid.uuid4()
         database.add_message(session_id, "user", "A useful title", turn_id)
         database.add_tool_call(
-            session_id, turn_id, "call-1", "child-session", "get_uk_weather", '{"location":"Cardiff"}'
+            session_id,
+            turn_id,
+            "call-1",
+            "child-session",
+            "get_uk_weather",
+            '{"location":"Cardiff"}',
+            "Selecting the live weather source",
         )
         database.complete_tool_call(session_id, "call-1", '{"temperature_c":12}', False)
         database.add_message(session_id, "assistant", "Hello", turn_id)
@@ -31,6 +37,7 @@ def test_database_round_trip() -> None:
             "agent_session_id": "child-session",
             "name": "get_uk_weather",
             "arguments": '{"location":"Cardiff"}',
+            "reasoning": "Selecting the live weather source",
             "result": '{"temperature_c":12}',
             "is_error": False,
         }]

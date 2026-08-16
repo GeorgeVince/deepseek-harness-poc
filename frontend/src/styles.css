@@ -37,6 +37,8 @@ header small { color: #666; }
 .assistant-avatar { display: grid; width: 2rem; height: 2rem; place-items: center; border-radius: 50%; color: white; background: #171717; font-size: .8rem; }
 .message-text { white-space: pre-wrap; }
 .thinking { color: #777; }
+.reasoning-part { display: flex; align-items: baseline; gap: .45rem; margin: .45rem 0; color: #555; font-size: .875rem; }
+.reasoning-part > span:first-child { flex: none; color: #777; font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
 .composer-wrap { position: sticky; bottom: 0; width: 100%; max-width: 700px; padding: .75rem 0 1rem; background: white; }
 .composer { display: flex; align-items: flex-end; gap: .5rem; padding: .55rem; border: 1px solid #aaa; border-radius: .8rem; background: white; box-shadow: 0 1px 4px #0001; }
 .composer textarea { flex: 1; max-height: 10rem; resize: none; padding: .45rem; border: 0; outline: 0; font: inherit; }

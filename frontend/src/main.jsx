@@ -105,7 +105,13 @@ function ToolCall({ toolName, args, result, isError }) {
 }
 
 const TextPart = () => <MessagePartPrimitive.Text className="message-text" />;
-const messageParts = { Text: TextPart, Empty: () => <span className="thinking">Thinking…</span>, tools: { Fallback: ToolCall } };
+const ReasoningPart = () => (
+  <div className="reasoning-part">
+    <span>Reasoning summary</span>
+    <MessagePartPrimitive.Text smooth={false} />
+  </div>
+);
+const messageParts = { Text: TextPart, Reasoning: ReasoningPart, Empty: () => <span className="thinking">Thinking…</span>, tools: { Fallback: ToolCall } };
 
 function UserMessage() {
   return <MessagePrimitive.Root className="user-message"><MessagePrimitive.Parts components={messageParts} /></MessagePrimitive.Root>;
@@ -145,14 +151,17 @@ function ChatPane({ session, initialMessages, onSessionsChanged, onFilesChanged 
       id: `db-${message.id}`,
       role: message.role,
       content: [
-        ...(message.tool_calls || []).map((call) => ({
-          type: "tool-call",
-          toolCallId: call.id,
-          toolName: call.name,
-          args: parseArgs(call.arguments),
-          argsText: call.arguments || "{}",
-          ...(call.result !== null && { result: call.result, isError: call.is_error }),
-        })),
+        ...(message.tool_calls || []).flatMap((call) => [
+          ...(call.reasoning ? [{ type: "reasoning", text: call.reasoning }] : []),
+          {
+            type: "tool-call",
+            toolCallId: call.id,
+            toolName: call.name,
+            args: parseArgs(call.arguments),
+            argsText: call.arguments || "{}",
+            ...(call.result !== null && { result: call.result, isError: call.is_error }),
+          },
+        ]),
         { type: "text", text: message.content },
       ],
       createdAt: new Date(message.created_at),
@@ -183,13 +192,17 @@ function ChatPane({ session, initialMessages, onSessionsChanged, onFilesChanged 
     try {
       for await (const event of chatEvents(session.id, text)) {
         if (event.type === "tool_call") {
-          updateAssistant((message) => ({ ...message, content: [...message.content, {
-            type: "tool-call",
-            toolCallId: event.data.id,
-            toolName: event.data.name,
-            args: parseArgs(event.data.arguments),
-            argsText: typeof event.data.arguments === "string" ? event.data.arguments : JSON.stringify(event.data.arguments),
-          }] }));
+          updateAssistant((message) => ({ ...message, content: [
+            ...message.content,
+            ...(event.data.reasoning ? [{ type: "reasoning", text: event.data.reasoning }] : []),
+            {
+              type: "tool-call",
+              toolCallId: event.data.id,
+              toolName: event.data.name,
+              args: parseArgs(event.data.arguments),
+              argsText: typeof event.data.arguments === "string" ? event.data.arguments : JSON.stringify(event.data.arguments),
+            },
+          ] }));
         }
         if (event.type === "tool_result") {
           updateAssistant((message) => ({ ...message, content: message.content.map((part) =>

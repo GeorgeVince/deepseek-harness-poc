@@ -60,6 +60,7 @@ def list_messages(session_id: uuid.UUID) -> list[dict[str, Any]]:
             "agent_session_id": call["agent_session_id"],
             "name": call["name"],
             "arguments": call["arguments"],
+            "reasoning": call["reasoning"],
             "result": call["result"],
             "is_error": call["is_error"],
         })
@@ -101,15 +102,16 @@ def add_tool_call(
     agent_session_id: str,
     name: str,
     arguments: str | None,
+    reasoning: str | None = None,
 ) -> None:
     with connect() as connection:
         connection.execute(
             """
-            INSERT INTO tool_calls (session_id, turn_id, call_id, agent_session_id, name, arguments)
-            VALUES (%s, %s, %s, %s, %s, %s)
+            INSERT INTO tool_calls (session_id, turn_id, call_id, agent_session_id, name, arguments, reasoning)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (session_id, call_id) DO NOTHING
             """,
-            (session_id, turn_id, call_id, agent_session_id, name, arguments),
+            (session_id, turn_id, call_id, agent_session_id, name, arguments, reasoning),
         )
 
 

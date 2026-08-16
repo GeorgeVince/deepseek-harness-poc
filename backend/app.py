@@ -128,6 +128,15 @@ def browser_event(notification: Notification) -> tuple[str, dict[str, Any]] | No
         )
         if text:
             return "assistant", {"text": text}
+        reasoning = "".join(
+            str(block.get("text") or "")
+            for block in blocks or []
+            if isinstance(block, dict) and block.get("type") == "reasoning"
+        ).strip()
+        if reasoning:
+            if reasoning.startswith("**") and reasoning.endswith("**"):
+                reasoning = reasoning[2:-2]
+            return "reasoning", {"text": reasoning, "turn": data.get("turn"), "step": data.get("step")}
     return None
 
 
@@ -173,6 +182,7 @@ def chat_events(state: Any, chat_id: uuid.UUID, message: str, history: list[dict
 
     def run() -> None:
         emit_frame("status", {"text": "Thinking…"})
+        reasoning_by_step: dict[tuple[str, object, object], str] = {}
         try:
             prompt = message if chat_id in state.primed_chats else resumed_prompt(message, history)
             turn_id = uuid.uuid4()
@@ -185,9 +195,22 @@ def chat_events(state: Any, chat_id: uuid.UUID, message: str, history: list[dict
                     return
                 kind, value = event
                 agent_session_id = str(notification.payload.get("sessionId") or "unknown")
+                if kind == "reasoning":
+                    reasoning_by_step[(agent_session_id, value["turn"], value["step"])] = value["text"]
+                    return
                 if kind == "tool_call":
+                    event_data = notification.payload["event"]["data"]
+                    value["reasoning"] = reasoning_by_step.get(
+                        (agent_session_id, event_data.get("turn"), event_data.get("step"))
+                    )
                     database.add_tool_call(
-                        chat_id, turn_id, value["id"], agent_session_id, value["name"], value["arguments"]
+                        chat_id,
+                        turn_id,
+                        value["id"],
+                        agent_session_id,
+                        value["name"],
+                        value["arguments"],
+                        value["reasoning"],
                     )
                 elif kind == "tool_result":
                     database.complete_tool_call(chat_id, value["id"], value["result"], value["is_error"])

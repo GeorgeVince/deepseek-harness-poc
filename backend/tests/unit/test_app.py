@@ -99,6 +99,13 @@ def test_harness_events_become_browser_sse() -> None:
     assistant = Notification("session.event", {"event": {
         "type": "assistant/message", "data": {"message": {"content": [{"type": "text", "text": "Done"}]}},
     }})
+    reasoning = Notification("session.event", {"event": {
+        "type": "assistant/message", "data": {
+            "turn": 1,
+            "step": 2,
+            "message": {"content": [{"type": "reasoning", "text": "**Checking workbook formulas**"}]},
+        },
+    }})
 
     assert browser_event(call) == ("tool_call", {"id": "call-1", "name": "get_uk_weather", "arguments": '{"location":"Edinburgh"}'})
     sandbox_call = Notification("session.event", {"event": {
@@ -115,6 +122,10 @@ def test_harness_events_become_browser_sse() -> None:
     })
     assert browser_event(result) == ("tool_result", {"id": "call-1", "result": "found", "is_error": False})
     assert browser_event(assistant) == ("assistant", {"text": "Done"})
+    assert browser_event(reasoning) == (
+        "reasoning",
+        {"text": "Checking workbook formulas", "turn": 1, "step": 2},
+    )
     assert sse_frame("done", {"response": "Hi\nthere"}) == b'event: done\ndata: {"response":"Hi\\nthere"}\n\n'
 
 
