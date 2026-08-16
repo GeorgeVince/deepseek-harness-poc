@@ -12,9 +12,18 @@ aside nav button { overflow: hidden; padding: 10px; border: 0; border-radius: 8p
 aside nav button:hover, aside nav button.active { color: white; background: #333; }
 button:disabled { cursor: default; opacity: .5; }
 main { width: min(900px, 100%); height: 100vh; margin: auto; display: grid; grid-template-rows: auto minmax(0, 1fr); background: white; }
-header { padding: 18px 20px; border-bottom: 1px solid #ddd; }
+header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 14px 20px; border-bottom: 1px solid #ddd; }
+.header-title { min-width: 0; }
 header h2 { overflow: hidden; margin: 0; font-size: 19px; text-overflow: ellipsis; white-space: nowrap; }
 header small { color: #666; }
+.workspace-files { display: flex; min-width: 0; align-items: center; gap: .6rem; }
+.upload-button { position: relative; flex: none; padding: .45rem .65rem; border: 1px solid #aaa; border-radius: .5rem; background: #fafafa; cursor: pointer; font-size: .8rem; font-weight: 600; }
+.upload-button:focus-within { outline: 2px solid #171717; outline-offset: 2px; }
+.upload-button input { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+.file-error { flex: none; color: #b91c1c; font-size: .75rem; }
+.file-links { display: flex; max-width: 330px; gap: .35rem; overflow-x: auto; }
+.file-links a { flex: none; max-width: 150px; overflow: hidden; padding: .35rem .5rem; border-radius: .4rem; color: #333; background: #eee; font-size: .75rem; text-decoration: none; text-overflow: ellipsis; white-space: nowrap; }
+.file-links a:hover { background: #ddd; }
 .chat { min-height: 0; }
 .load-state { padding: 2rem; color: #666; text-align: center; }
 .thread-root, .thread-viewport { height: 100%; }
@@ -46,5 +55,8 @@ header small { color: #666; }
   aside { padding: 8px; }
   aside h1, aside button { font-size: 13px; }
   aside nav button { padding: 9px 6px; }
+  header { align-items: flex-start; flex-direction: column; }
+  .workspace-files, .file-links { width: 100%; }
+  .file-links { max-width: none; }
   .thread-viewport { padding-inline: .75rem; }
 }

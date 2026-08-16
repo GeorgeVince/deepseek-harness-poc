@@ -87,7 +87,7 @@ services:
       - /tmp
     volumes:
       - ./.dsh:/app/.dsh
-      - agent_workspace:/workspace:ro
+      - agent_workspace:/workspace
       - sandbox_socket:/run/sandbox:ro
 
 volumes:

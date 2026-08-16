@@ -1,16 +1,19 @@
 import asyncio
-import json
-import uuid
+import io
+import threading
+import zipfile
 
 import pytest
 from deepseek_harness import Notification
 from fastmcp import Client
+from httpx import ASGITransport, AsyncClient
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from pydantic import ValidationError
 
 import telemetry
-from app import browser_event, llm_config, parse_chat_request, resumed_prompt, sse_frame
+from app import ChatPayload, app, browser_event, llm_config, process_upload, resumed_prompt, sse_frame, workbook_name, workspace_files
 from database import _title
 from mcp_server import server
 
@@ -24,14 +27,63 @@ def test_llm_config_accepts_exactly_one_credential() -> None:
         llm_config({"OPENAI_TOKEN": "token", "OPENAI_API_KEY": "key"})
 
 
-def test_parse_chat_request_validates_input() -> None:
-    session_id = uuid.uuid4()
-    assert parse_chat_request(json.dumps({"message": " hi ", "session_id": str(session_id)}).encode()) == ("hi", session_id)
-    with pytest.raises(ValueError, match="session_id is invalid"):
-        parse_chat_request(b'{"message":"hi","session_id":"../escape"}')
+def test_chat_payload_validates_input() -> None:
+    assert ChatPayload(message=" hi ").message == "hi"
+    with pytest.raises(ValidationError, match="message is required"):
+        ChatPayload(message="   ")
     assert _title("a " * 40).endswith("...")
     prompt = resumed_prompt("What was it?", [{"role": "user", "content": "Remember ORCHID"}])
     assert "Remember ORCHID" in prompt and "What was it?" in prompt
+
+
+def test_workbook_workspace_rejects_unsafe_names_and_symlinks(tmp_path) -> None:
+    assert workbook_name("Forecast 2026.xlsx") == "Forecast 2026.xlsx"
+    for name in ("../secret.xlsx", "report.xls", 'bad"name.xlsx'):
+        with pytest.raises(ValueError, match="simple .xlsx"):
+            workbook_name(name)
+    workbook = tmp_path / "report.xlsx"
+    workbook.write_bytes(b"PK\x03\x04data")
+    (tmp_path / "alias.xlsx").symlink_to(workbook)
+    assert [item["name"] for item in workspace_files(tmp_path)] == ["report.xlsx"]
+
+
+def test_background_upload_validates_and_publishes_workbook(tmp_path) -> None:
+    staging = tmp_path / ".upload.tmp"
+    with zipfile.ZipFile(staging, "w") as workbook:
+        workbook.writestr("[Content_Types].xml", '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>')
+        workbook.writestr("xl/workbook.xml", '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"/>')
+    jobs = {"upload-1": {"id": "upload-1", "status": "processing"}}
+    destination = tmp_path / "input.xlsx"
+
+    process_upload("upload-1", staging, destination, jobs, threading.Lock())
+
+    assert destination.is_file()
+    assert jobs["upload-1"]["status"] == "complete"
+
+
+def test_fastapi_upload_runs_background_validation(tmp_path) -> None:
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, "w") as workbook:
+        workbook.writestr("[Content_Types].xml", '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>')
+        workbook.writestr("xl/workbook.xml", '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"/>')
+    app.state.workspace = tmp_path
+    app.state.upload_jobs = {}
+    app.state.upload_lock = threading.Lock()
+
+    async def check() -> None:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post(
+                "/api/files",
+                files={"file": ("browser.xlsx", payload.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            )
+            assert response.status_code == 202
+            upload_id = response.json()["upload"]["id"]
+            status = await client.get(f"/api/uploads/{upload_id}")
+            assert status.json()["upload"]["status"] == "complete"
+            download = await client.get("/api/files/browser.xlsx")
+            assert download.content == payload.getvalue()
+
+    asyncio.run(check())
 
 
 def test_harness_events_become_browser_sse() -> None:

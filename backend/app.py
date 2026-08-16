@@ -1,22 +1,29 @@
 #!/usr/bin/env python3
-"""Browser chat backed by DeepSeek Harness and PostgreSQL."""
+"""FastAPI browser chat backed by DeepSeek Harness and PostgreSQL."""
 
 import argparse
+import asyncio
 import json
-import mimetypes
 import os
+import queue
 import re
+import stat
 import sys
-import time
+import threading
 import uuid
-from collections.abc import Mapping
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import zipfile
+from collections.abc import Iterator, Mapping
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
+import uvicorn
 from deepseek_harness import DeepSeekHarness, Notification
 from dotenv import load_dotenv
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 import database
 import telemetry
@@ -24,7 +31,22 @@ import telemetry
 ROOT = Path(__file__).resolve().parent
 PROJECT_ROOT = ROOT.parent
 FRONTEND_DIST = PROJECT_ROOT / "frontend" / "dist"
-MAX_BODY_BYTES = 20_000
+MAX_WORKBOOK_BYTES = 64 * 1024 * 1024
+MAX_UNCOMPRESSED_WORKBOOK_BYTES = 256 * 1024 * 1024
+WORKBOOK_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._ -]{0,120}\.xlsx", re.IGNORECASE)
+
+
+class ChatPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    message: str = Field(max_length=20_000)
+
+    @field_validator("message")
+    @classmethod
+    def message_is_not_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("message is required")
+        return value
 
 
 def llm_config(env: Mapping[str, str]) -> tuple[str, str]:
@@ -38,24 +60,19 @@ def llm_config(env: Mapping[str, str]) -> tuple[str, str]:
     return ("openai-codex" if token else "openai"), model
 
 
-def parse_session_id(value: object) -> uuid.UUID:
-    if not isinstance(value, str):
-        raise ValueError("session_id is invalid")
-    try:
-        return uuid.UUID(value)
-    except ValueError as error:
-        raise ValueError("session_id is invalid") from error
+def workbook_name(value: object) -> str:
+    if not isinstance(value, str) or not WORKBOOK_NAME.fullmatch(value):
+        raise ValueError("filename must be a simple .xlsx name")
+    return value
 
 
-def parse_chat_request(raw: bytes) -> tuple[str, uuid.UUID]:
-    """Validate one browser request and return its message and session ID."""
-    body = json.loads(raw)
-    if not isinstance(body, dict):
-        raise ValueError("Request must be a JSON object")
-    message = body.get("message")
-    if not isinstance(message, str) or not message.strip():
-        raise ValueError("message is required")
-    return message.strip(), parse_session_id(body.get("session_id"))
+def workspace_files(root: Path) -> list[dict[str, Any]]:
+    files = []
+    for path in root.iterdir():
+        if path.suffix.lower() == ".xlsx" and path.is_file() and not path.is_symlink():
+            info = path.stat()
+            files.append({"name": path.name, "size": info.st_size, "modified_at": info.st_mtime})
+    return sorted(files, key=lambda item: item["modified_at"], reverse=True)
 
 
 def resumed_prompt(message: str, history: list[dict[str, Any]]) -> str:
@@ -107,72 +124,49 @@ def sse_frame(event: str, data: dict[str, Any]) -> bytes:
     return f"event: {event}\ndata: {json.dumps(data, separators=(',', ':'))}\n\n".encode()
 
 
-class ChatHandler(BaseHTTPRequestHandler):
-    harness: DeepSeekHarness
-    harness_process_id: str
-    primed_sessions: set[uuid.UUID] = set()
+def process_upload(
+    upload_id: str,
+    staging: Path,
+    destination: Path,
+    jobs: dict[str, dict[str, Any]],
+    lock: threading.Lock,
+) -> None:
+    try:
+        with zipfile.ZipFile(staging) as workbook:
+            names = set(workbook.namelist())
+            if not {"[Content_Types].xml", "xl/workbook.xml"}.issubset(names):
+                raise ValueError("file is not an XLSX workbook")
+            if sum(item.file_size for item in workbook.infolist()) > MAX_UNCOMPRESSED_WORKBOOK_BYTES:
+                raise ValueError("uncompressed workbook exceeds 256 MB")
+            if workbook.testzip() is not None:
+                raise ValueError("workbook archive is corrupt")
+        staging.replace(destination)
+        info = destination.stat()
+        result = {
+            "id": upload_id,
+            "status": "complete",
+            "file": {"name": destination.name, "size": info.st_size, "modified_at": info.st_mtime},
+        }
+    except (OSError, ValueError, zipfile.BadZipFile) as error:
+        staging.unlink(missing_ok=True)
+        result = {"id": upload_id, "status": "failed", "error": str(error)}
+    with lock:
+        jobs[upload_id] = result
 
-    def do_GET(self) -> None:
-        path = urlparse(self.path).path
-        if path in {"/", "/index.html"}:
-            self._static(FRONTEND_DIST / "index.html")
-            return
-        if re.fullmatch(r"/assets/[A-Za-z0-9._-]+", path):
-            self._static(FRONTEND_DIST / path.removeprefix("/"))
-            return
-        if path == "/api/sessions":
-            self._json(200, {"sessions": database.list_sessions()})
-            return
-        match = re.fullmatch(r"/api/sessions/([^/]+)/messages", path)
-        if match:
-            try:
-                session_id = parse_session_id(match.group(1))
-                if database.get_session(session_id) is None:
-                    self._json(404, {"error": "Session not found"})
-                else:
-                    self._json(200, {"messages": database.list_messages(session_id)})
-            except ValueError as error:
-                self._json(400, {"error": str(error)})
-            return
-        self.send_error(404)
 
-    def do_POST(self) -> None:
-        path = urlparse(self.path).path
-        if path == "/api/sessions":
-            self._json(201, database.create_session())
-            return
-        if path != "/api/chat":
-            self.send_error(404)
-            return
+def chat_events(state: Any, chat_id: uuid.UUID, message: str, history: list[dict[str, Any]]) -> Iterator[bytes]:
+    events: queue.Queue[bytes | None] = queue.Queue()
+
+    def emit_frame(kind: str, value: dict[str, Any]) -> None:
+        events.put(sse_frame(kind, value))
+
+    def run() -> None:
+        emit_frame("status", {"text": "Thinking…"})
         try:
-            length = int(self.headers.get("content-length", "0"))
-            if not 0 < length <= MAX_BODY_BYTES:
-                raise ValueError("Invalid request size")
-            message, session_id = parse_chat_request(self.rfile.read(length))
-            if database.get_session(session_id) is None:
-                self._json(404, {"error": "Session not found"})
-                return
-            history = database.list_messages(session_id)
-        except (ValueError, json.JSONDecodeError) as error:
-            self._json(400, {"error": str(error)})
-            return
-        except Exception as error:
-            self._json(500, {"error": str(error)})
-            return
-
-        self.send_response(200)
-        self.send_header("content-type", "text/event-stream; charset=utf-8")
-        self.send_header("cache-control", "no-cache")
-        self.send_header("connection", "close")
-        self.send_header("x-accel-buffering", "no")
-        self.end_headers()
-        self.close_connection = True
-        self._sse("status", {"text": "Thinking…"})
-        try:
-            prompt = message if session_id in self.primed_sessions else resumed_prompt(message, history)
+            prompt = message if chat_id in state.primed_chats else resumed_prompt(message, history)
             turn_id = uuid.uuid4()
-            database.add_message(session_id, "user", message, turn_id)
-            runtime_session_id = f"{session_id.hex}-{self.harness_process_id}"
+            database.add_message(chat_id, "user", message, turn_id)
+            runtime_session_id = f"{chat_id.hex}-{state.harness_process_id}"
 
             def emit(notification: Notification) -> None:
                 event = browser_event(notification)
@@ -182,66 +176,33 @@ class ChatHandler(BaseHTTPRequestHandler):
                 agent_session_id = str(notification.payload.get("sessionId") or "unknown")
                 if kind == "tool_call":
                     database.add_tool_call(
-                        session_id,
-                        turn_id,
-                        value["id"],
-                        agent_session_id,
-                        value["name"],
-                        value["arguments"],
+                        chat_id, turn_id, value["id"], agent_session_id, value["name"], value["arguments"]
                     )
                 elif kind == "tool_result":
-                    database.complete_tool_call(
-                        session_id, value["id"], value["result"], value["is_error"]
-                    )
+                    database.complete_tool_call(chat_id, value["id"], value["result"], value["is_error"])
                 if agent_session_id == runtime_session_id or kind in {"tool_call", "tool_result"}:
-                    self._sse(kind, value)
+                    emit_frame(kind, value)
 
             result = telemetry.run_agent(
-                self.harness, prompt, runtime_session_id, str(session_id), on_notification=emit
+                state.harness, prompt, runtime_session_id, str(chat_id), on_notification=emit
             )
             if result.finish_reason == "error" or not result.final_response:
                 raise RuntimeError("Agent turn failed")
-            self.primed_sessions.add(session_id)
-            database.add_message(session_id, "assistant", result.final_response, turn_id)
-            self._sse("done", {"response": result.final_response, "finish_reason": result.finish_reason})
+            state.primed_chats.add(chat_id)
+            database.add_message(chat_id, "assistant", result.final_response, turn_id)
+            emit_frame("done", {"response": result.final_response, "finish_reason": result.finish_reason})
         except Exception as error:
-            self._sse("error", {"error": str(error)})
+            emit_frame("error", {"error": str(error)})
+        finally:
+            events.put(None)
 
-    def _sse(self, event: str, value: dict[str, Any]) -> None:
-        try:
-            self.wfile.write(sse_frame(event, value))
-            self.wfile.flush()
-        except OSError:
-            pass
-
-    def _json(self, status: int, value: dict[str, Any]) -> None:
-        self._send(status, "application/json", json.dumps(value).encode())
-
-    def _static(self, path: Path) -> None:
-        try:
-            body = path.read_bytes()
-        except FileNotFoundError:
-            self.send_error(404)
-            return
-        content_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
-        if path.suffix == ".html":
-            content_type += "; charset=utf-8"
-        self._send(200, content_type, body)
-
-    def _send(self, status: int, content_type: str, body: bytes) -> None:
-        self.send_response(status)
-        self.send_header("content-type", content_type)
-        self.send_header("content-length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+    threading.Thread(target=run, daemon=True).start()
+    while (event := events.get()) is not None:
+        yield event
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8000)
-    args = parser.parse_args()
-
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     load_dotenv(PROJECT_ROOT / ".env")
     provider, model = llm_config(os.environ)
     database.initialize()
@@ -249,9 +210,8 @@ def main() -> None:
 
     session_root = PROJECT_ROOT / ".dsh" / "sessions"
     session_root.mkdir(parents=True, exist_ok=True)
-    agent_workspace = Path(os.environ.get("AGENT_WORKSPACE", PROJECT_ROOT)).resolve()
-    agent_workspace.mkdir(parents=True, exist_ok=True)
-
+    workspace = Path(os.environ.get("AGENT_WORKSPACE", PROJECT_ROOT)).resolve()
+    workspace.mkdir(parents=True, exist_ok=True)
     runtime = ROOT / "node_modules" / ".bin" / "dsh-jsonrpc-agent"
     if not runtime.exists():
         raise RuntimeError("Harness MCP workaround is not installed; run npm install")
@@ -259,7 +219,7 @@ def main() -> None:
     harness = DeepSeekHarness(
         provider=provider,
         model=model,
-        cwd=str(agent_workspace),
+        cwd=str(workspace),
         session_root=str(session_root),
         cordis=str(ROOT / "poc.cordis.yml"),
         runtime_bin=str(runtime),
@@ -269,22 +229,159 @@ def main() -> None:
             "DATABASE_URL": "",  # Do not expose app database credentials to Harness/MCP children.
         },
     )
-    # ponytail: rc.6 has no plugin-readiness handshake; give MCP discovery time.
     harness.start()
-    time.sleep(5)
-    with harness:
-        ChatHandler.harness = harness
-        ChatHandler.harness_process_id = uuid.uuid4().hex[:12]
-        ChatHandler.primed_sessions = set()
-        server = HTTPServer((args.host, args.port), ChatHandler)
-        print(f"Chatbot: http://{args.host}:{args.port}")
-        try:
-            server.serve_forever()
-        except KeyboardInterrupt:
-            pass
-        finally:
-            server.server_close()
-    tracer_provider.shutdown()
+    # ponytail: rc.6 has no plugin-readiness handshake; give MCP discovery time.
+    await asyncio.sleep(5)
+    app.state.harness = harness
+    app.state.harness_process_id = uuid.uuid4().hex[:12]
+    app.state.workspace = workspace
+    app.state.primed_chats = set()
+    # ponytail: upload status is process-local; persist/prune it if jobs become long-lived.
+    app.state.upload_jobs = {}
+    app.state.upload_lock = threading.Lock()
+    try:
+        yield
+    finally:
+        harness.close()
+        tracer_provider.shutdown()
+
+
+app = FastAPI(title="Harness Chat", lifespan=lifespan)
+
+
+@app.get("/api/chats")
+def list_chats() -> dict[str, Any]:
+    return {"chats": database.list_sessions()}
+
+
+@app.post("/api/chats", status_code=201)
+def create_chat() -> dict[str, Any]:
+    return database.create_session()
+
+
+@app.get("/api/chats/{chat_id}/history")
+def chat_history(chat_id: uuid.UUID) -> dict[str, Any]:
+    if database.get_session(chat_id) is None:
+        raise HTTPException(404, "Chat not found")
+    return {"messages": database.list_messages(chat_id)}
+
+
+@app.post("/api/chats/{chat_id}/stream")
+def stream_chat(chat_id: uuid.UUID, payload: ChatPayload, request: Request) -> StreamingResponse:
+    if database.get_session(chat_id) is None:
+        raise HTTPException(404, "Chat not found")
+    history = database.list_messages(chat_id)
+    return StreamingResponse(
+        chat_events(request.app.state, chat_id, payload.message, history),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.get("/api/files")
+def list_files(request: Request) -> dict[str, Any]:
+    return {"files": workspace_files(request.app.state.workspace)}
+
+
+@app.post("/api/files", status_code=202)
+async def upload_file(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+) -> JSONResponse:
+    try:
+        name = workbook_name(file.filename)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+
+    upload_id = uuid.uuid4().hex
+    staging = request.app.state.workspace / f".upload-{upload_id}.tmp"
+    size = 0
+    try:
+        with staging.open("xb") as output:
+            while chunk := await file.read(1024 * 1024):
+                size += len(chunk)
+                if size > MAX_WORKBOOK_BYTES:
+                    raise HTTPException(413, "workbook exceeds 64 MB")
+                output.write(chunk)
+        if size == 0:
+            raise HTTPException(400, "workbook is empty")
+    except Exception:
+        staging.unlink(missing_ok=True)
+        raise
+    finally:
+        await file.close()
+
+    job = {"id": upload_id, "status": "processing", "name": name}
+    with request.app.state.upload_lock:
+        request.app.state.upload_jobs[upload_id] = job
+    background_tasks.add_task(
+        process_upload,
+        upload_id,
+        staging,
+        request.app.state.workspace / name,
+        request.app.state.upload_jobs,
+        request.app.state.upload_lock,
+    )
+    return JSONResponse(
+        {"upload": job},
+        status_code=202,
+        headers={"Location": f"/api/uploads/{upload_id}"},
+        background=background_tasks,
+    )
+
+
+@app.get("/api/uploads/{upload_id}")
+def upload_status(upload_id: str, request: Request) -> dict[str, Any]:
+    with request.app.state.upload_lock:
+        upload = request.app.state.upload_jobs.get(upload_id)
+        if upload is None:
+            raise HTTPException(404, "Upload not found")
+        return {"upload": upload.copy()}
+
+
+@app.get("/api/files/{name}")
+def download_file(name: str, request: Request) -> StreamingResponse:
+    try:
+        path = request.app.state.workspace / workbook_name(name)
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode):
+            raise OSError
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+    except OSError as error:
+        raise HTTPException(404, "Workbook not found") from error
+
+    def content() -> Iterator[bytes]:
+        with os.fdopen(descriptor, "rb") as workbook:
+            while chunk := workbook.read(1024 * 1024):
+                yield chunk
+
+    return StreamingResponse(
+        content(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f'attachment; filename="{name}"',
+            "Content-Length": str(info.st_size),
+        },
+    )
+
+
+app.mount("/assets", StaticFiles(directory=FRONTEND_DIST / "assets", check_dir=False), name="assets")
+
+
+@app.get("/", include_in_schema=False)
+def frontend() -> FileResponse:
+    return FileResponse(FRONTEND_DIST / "index.html")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8000)
+    args = parser.parse_args()
+    uvicorn.run(app, host=args.host, port=args.port)
 
 
 if __name__ == "__main__":

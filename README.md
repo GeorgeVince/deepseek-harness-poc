@@ -41,12 +41,7 @@ Open the chatbot at <http://127.0.0.1:8000> and Phoenix at <http://127.0.0.1:600
 
 The coordinator's `run_bash` and `run_python` tools execute in a credential-free sidecar with no network. Its root filesystem is read-only; only `/workspace` and ephemeral `/tmp` are writable. Bubblewrap adds a private PID, mount, IPC, and network namespace per command. Compose also caps the sidecar at one CPU, 256 MB, 64 processes, 30 seconds, 64 MB output files, and a 32 KB returned-output tail. Specialist agents retain their existing tool allowlists and cannot execute code.
 
-[Formualizer](https://github.com/psu3d0/formualizer) 0.8.4 is installed in the sidecar, so the coordinator can load, edit, recalculate, and export XLSX workbooks through `run_python`. Until the UI has file attachments, copy workbooks through the shared workspace:
-
-```bash
-docker compose exec -T sandbox-runner sh -c 'cat > /workspace/input.xlsx' < input.xlsx
-docker compose exec -T sandbox-runner cat /workspace/output.xlsx > output.xlsx
-```
+[Formualizer](https://github.com/psu3d0/formualizer) 0.8.4 is installed in the sidecar, so the coordinator can load, edit, recalculate, and export XLSX workbooks through `run_python`. Use **+ Excel** in the chat header to upload a workbook, mention its filename in your prompt, and download source or generated workbooks from the adjacent file list. Uploads are limited to simple `.xlsx` filenames and 64 MB.
 
 ## Run locally
 
@@ -64,7 +59,18 @@ npm install
 uv run python app.py
 ```
 
-The backend serves `frontend/dist` and loads `../.env` automatically when run from `backend/`.
+The FastAPI backend serves `frontend/dist`, loads `../.env` automatically, and exposes interactive API documentation at `/docs`.
+
+## HTTP API
+
+- `GET|POST /api/chats` — list or create chats
+- `GET /api/chats/{chat_id}/history` — persisted messages and decision traces
+- `POST /api/chats/{chat_id}/stream` — SSE chat stream
+- `GET|POST /api/files` — list workbooks or stage a multipart upload
+- `GET /api/files/{name}` — download a workbook
+- `GET /api/uploads/{upload_id}` — poll background XLSX validation and publication
+
+Uploads return `202 Accepted`; the background task validates the XLSX archive before making it visible in `/workspace`.
 
 ## Arize Phoenix
 

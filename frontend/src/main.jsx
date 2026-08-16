@@ -13,15 +13,15 @@ import "./styles.css";
 async function api(path, options) {
   const response = await fetch(path, options);
   const data = await response.json();
-  if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+  if (!response.ok) throw new Error(data.error || (typeof data.detail === "string" ? data.detail : data.detail?.[0]?.msg) || `HTTP ${response.status}`);
   return data;
 }
 
 async function* chatEvents(sessionId, message) {
-  const response = await fetch("/api/chat", {
+  const response = await fetch(`/api/chats/${sessionId}/stream`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ session_id: sessionId, message }),
+    body: JSON.stringify({ message }),
   });
   if (!response.ok) {
     const data = await response.json();
@@ -122,7 +122,7 @@ function ChatThread() {
   );
 }
 
-function ChatPane({ session, initialMessages, onSessionsChanged }) {
+function ChatPane({ session, initialMessages, onSessionsChanged, onFilesChanged }) {
   const [messages, setMessages] = useState(() =>
     initialMessages.map((message) => ({
       id: `db-${message.id}`,
@@ -196,7 +196,7 @@ function ChatPane({ session, initialMessages, onSessionsChanged }) {
         if (event.type === "error") throw new Error(event.data.error);
       }
       if (!finished) throw new Error("Chat stream closed unexpectedly");
-      await onSessionsChanged();
+      await Promise.all([onSessionsChanged(), onFilesChanged()]);
     } catch (error) {
       updateAssistant((message) => ({
         ...message,
@@ -206,7 +206,7 @@ function ChatPane({ session, initialMessages, onSessionsChanged }) {
     } finally {
       setRunning(false);
     }
-  }, [onSessionsChanged, running, session.id]);
+  }, [onFilesChanged, onSessionsChanged, running, session.id]);
 
   const runtime = useExternalStoreRuntime({
     messages,
@@ -218,24 +218,84 @@ function ChatPane({ session, initialMessages, onSessionsChanged }) {
   return <AssistantRuntimeProvider runtime={runtime}><ChatThread /></AssistantRuntimeProvider>;
 }
 
+function WorkspaceFiles({ files, onUpload, uploading, error }) {
+  return (
+    <div className="workspace-files">
+      <label className="upload-button">
+        {uploading ? "Uploading…" : "+ Excel"}
+        <input
+          type="file"
+          accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+          disabled={uploading}
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            event.target.value = "";
+            if (file) onUpload(file);
+          }}
+        />
+      </label>
+      {error && <span className="file-error" title={error}>Upload failed</span>}
+      <div className="file-links">
+        {files.length === 0 ? <small>No workbooks</small> : files.map((file) => (
+          <a key={file.name} href={`/api/files/${encodeURIComponent(file.name)}`} download title={`${file.name} · ${Math.ceil(file.size / 1024)} KB`}>
+            {file.name}
+          </a>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [sessions, setSessions] = useState([]);
+  const [files, setFiles] = useState([]);
   const [currentId, setCurrentId] = useState(localStorage.getItem("session_id"));
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
+  const [fileError, setFileError] = useState("");
 
   const refreshSessions = useCallback(async () => {
-    const data = await api("/api/sessions");
-    setSessions(data.sessions);
+    const data = await api("/api/chats");
+    setSessions(data.chats);
   }, []);
+
+  const refreshFiles = useCallback(async () => {
+    const data = await api("/api/files");
+    setFiles(data.files);
+  }, []);
+
+  const uploadWorkbook = useCallback(async (file) => {
+    setFileError("");
+    if (!/^[A-Za-z0-9][A-Za-z0-9._ -]{0,120}\.xlsx$/i.test(file.name) || file.size === 0 || file.size > 64 * 1024 * 1024) {
+      setFileError("Choose an XLSX file up to 64 MB with a simple filename.");
+      return;
+    }
+    setUploading(true);
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      let { upload } = await api("/api/files", { method: "POST", body: form });
+      for (let attempt = 0; upload.status === "processing" && attempt < 120; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        ({ upload } = await api(`/api/uploads/${upload.id}`));
+      }
+      if (upload.status !== "complete") throw new Error(upload.error || "Upload timed out");
+      await refreshFiles();
+    } catch (caught) {
+      setFileError(caught.message);
+    } finally {
+      setUploading(false);
+    }
+  }, [refreshFiles]);
 
   const openSession = useCallback(async (id) => {
     setBusy(true);
     setError("");
     try {
-      const data = await api(`/api/sessions/${id}/messages`);
+      const data = await api(`/api/chats/${id}/history`);
       localStorage.setItem("session_id", id);
       setCurrentId(id);
       setMessages(data.messages);
@@ -252,7 +312,7 @@ function App() {
     setBusy(true);
     setError("");
     try {
-      const session = await api("/api/sessions", { method: "POST" });
+      const session = await api("/api/chats", { method: "POST" });
       setSessions((current) => [session, ...current]);
       localStorage.setItem("session_id", session.id);
       setCurrentId(session.id);
@@ -268,9 +328,10 @@ function App() {
   useEffect(() => {
     (async () => {
       try {
-        const data = await api("/api/sessions");
-        setSessions(data.sessions);
-        const selected = data.sessions.find((item) => item.id === currentId) || data.sessions[0];
+        const [data, fileData] = await Promise.all([api("/api/chats"), api("/api/files")]);
+        setSessions(data.chats);
+        setFiles(fileData.files);
+        const selected = data.chats.find((item) => item.id === currentId) || data.chats[0];
         if (selected) await openSession(selected.id);
         else await createSession();
       } catch (caught) {
@@ -302,12 +363,15 @@ function App() {
       </aside>
       <main>
         <header>
-          <h2>{current?.title || "New chat"}</h2>
-          <small>Python · PostgreSQL · FastMCP · assistant-ui</small>
+          <div className="header-title">
+            <h2>{current?.title || "New chat"}</h2>
+            <small>Python · PostgreSQL · FastMCP · assistant-ui</small>
+          </div>
+          <WorkspaceFiles files={files} onUpload={uploadWorkbook} uploading={uploading} error={fileError} />
         </header>
         <section className="chat">
           {error ? <p className="load-state">Failed to load: {error}</p> : loading ? <p className="load-state">Loading…</p> : current && (
-            <ChatPane key={current.id} session={current} initialMessages={messages} onSessionsChanged={refreshSessions} />
+            <ChatPane key={current.id} session={current} initialMessages={messages} onSessionsChanged={refreshSessions} onFilesChanged={refreshFiles} />
           )}
         </section>
       </main>
