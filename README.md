@@ -62,8 +62,9 @@ Each chat turn produces an `AGENT` span containing one `LLM` span per model step
 ## Layout
 
 - `frontend/` — persistent-session browser UI
-- `backend/` — Python API, FastMCP tools, database schema, and Alembic migrations
+- `backend/` — Python API, FastMCP tools, database schema, Alembic migrations, and unit/integration tests
 - `compose.yml` — chatbot, PostgreSQL, and local Arize Phoenix services
+- `compose.test.yml` — Docker Compose integration-test runner
 
 ## Tool flow
 
@@ -82,10 +83,12 @@ The npm JSON-RPC runtime is a temporary workaround: the `0.1.0rc6` Python runtim
 
 The frontend restores the selected session and reloads its messages from PostgreSQL. After a backend restart, the first turn replays that PostgreSQL transcript into a fresh Harness runtime session; Harness's own logs remain in ignored `.dsh/sessions/`. Restart the backend after changing credentials.
 
-## Check
+## Test
 
 ```bash
-cd backend
-uv run pytest
-DATABASE_URL=postgresql+psycopg://chatbot:chatbot@localhost/chatbot uv run alembic check
+make test-unit         # local, no services required
+make test-integration  # isolated PostgreSQL via Docker Compose
+make test              # both
 ```
+
+Unit tests live in `backend/tests/unit/`. Integration tests live in `backend/tests/integration/`; they run only in the Compose test container, after applying Alembic migrations to a fresh PostgreSQL volume.
