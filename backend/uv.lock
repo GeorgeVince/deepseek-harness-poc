@@ -622,6 +622,7 @@ dependencies = [
     { name = "deepseek-harness-sdk" },
     { name = "fastmcp" },
     { name = "psycopg", extra = ["binary"] },
+    { name = "python-dotenv" },
     { name = "sqlalchemy" },
 ]
 
@@ -637,6 +638,7 @@ requires-dist = [
     { name = "deepseek-harness-sdk", specifier = "==0.1.0rc6" },
     { name = "fastmcp", specifier = "==3.4.7" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2,<4" },
+    { name = "python-dotenv", specifier = ">=1.0,<2" },
     { name = "sqlalchemy", specifier = ">=2.0,<3" },
 ]
 

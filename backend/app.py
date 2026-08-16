@@ -10,12 +10,14 @@ import re
 import sys
 import time
 import uuid
+from collections.abc import Mapping
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 from deepseek_harness import DeepSeekHarness
+from dotenv import load_dotenv
 
 import database
 import telemetry
@@ -24,18 +26,17 @@ ROOT = Path(__file__).resolve().parent
 PROJECT_ROOT = ROOT.parent
 PAGE = (PROJECT_ROOT / "frontend" / "index.html").read_bytes()
 MAX_BODY_BYTES = 20_000
-MIN_TOKEN_LIFETIME_MS = 5 * 60 * 1000
 
 
-def read_pi_oauth(path: Path, now_ms: int) -> str:
-    """Return pi's current OpenAI OAuth access token."""
-    auth = json.loads(path.read_text())["openai-codex"]
-    if auth.get("type") != "oauth" or not isinstance(auth.get("access"), str) or not auth["access"]:
-        raise RuntimeError(f"No OpenAI OAuth login in {path}; log in with pi first")
-    # ponytail: snapshot pi's token at startup; restart after pi refreshes it.
-    if not isinstance(auth.get("expires"), int) or auth["expires"] < now_ms + MIN_TOKEN_LIFETIME_MS:
-        raise RuntimeError("Pi's OpenAI OAuth token is expired or expiring; refresh it in pi, then restart")
-    return auth["access"]
+def llm_config(env: Mapping[str, str]) -> tuple[str, str]:
+    token = bool(env.get("OPENAI_TOKEN", "").strip())
+    api_key = bool(env.get("OPENAI_API_KEY", "").strip())
+    if token == api_key:
+        raise RuntimeError("Set exactly one of OPENAI_TOKEN or OPENAI_API_KEY in .env")
+    model = env.get("OPENAI_MODEL", "gpt-5.6-sol").strip()
+    if not model:
+        raise RuntimeError("OPENAI_MODEL cannot be empty")
+    return ("openai-codex" if token else "openai"), model
 
 
 def parse_session_id(value: object) -> uuid.UUID:
@@ -140,10 +141,10 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args()
 
+    load_dotenv(PROJECT_ROOT / ".env")
+    provider, model = llm_config(os.environ)
     tracer_provider = telemetry.configure()
 
-    auth_file = Path(os.environ.get("PI_AUTH_FILE", "~/.pi/agent/auth.json")).expanduser()
-    token = read_pi_oauth(auth_file, int(time.time() * 1000))
     session_root = PROJECT_ROOT / ".dsh" / "sessions"
     session_root.mkdir(parents=True, exist_ok=True)
 
@@ -152,14 +153,13 @@ def main() -> None:
         raise RuntimeError("Harness MCP workaround is not installed; run npm install")
 
     harness = DeepSeekHarness(
-        provider="openai-codex",
-        model="gpt-5.6-sol",
+        provider=provider,
+        model=model,
         cwd=str(PROJECT_ROOT),
         session_root=str(session_root),
         cordis=str(ROOT / "poc.cordis.yml"),
         runtime_bin=str(runtime),
         env={
-            "OPENAI_CODEX_TOKEN": token,
             "MCP_PYTHON": sys.executable,
             "MCP_SERVER": str(ROOT / "mcp_server.py"),
         },

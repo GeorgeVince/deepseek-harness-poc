@@ -1,7 +1,6 @@
 import asyncio
 import json
 import uuid
-from pathlib import Path
 
 import pytest
 from fastmcp import Client
@@ -10,17 +9,18 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 import telemetry
-from app import parse_chat_request, read_pi_oauth, resumed_prompt
+from app import llm_config, parse_chat_request, resumed_prompt
 from database import _title
 from mcp_server import gateway
 
 
-def test_read_pi_oauth_accepts_only_current_tokens(tmp_path: Path) -> None:
-    auth = tmp_path / "auth.json"
-    auth.write_text(json.dumps({"openai-codex": {"type": "oauth", "access": "token", "expires": 1_000_000}}))
-    assert read_pi_oauth(auth, 0) == "token"
-    with pytest.raises(RuntimeError, match="expired or expiring"):
-        read_pi_oauth(auth, 800_000)
+def test_llm_config_accepts_exactly_one_credential() -> None:
+    assert llm_config({"OPENAI_TOKEN": "token"}) == ("openai-codex", "gpt-5.6-sol")
+    assert llm_config({"OPENAI_API_KEY": "key", "OPENAI_MODEL": "gpt-5.4"}) == ("openai", "gpt-5.4")
+    with pytest.raises(RuntimeError, match="exactly one"):
+        llm_config({})
+    with pytest.raises(RuntimeError, match="exactly one"):
+        llm_config({"OPENAI_TOKEN": "token", "OPENAI_API_KEY": "key"})
 
 
 def test_parse_chat_request_validates_input() -> None:

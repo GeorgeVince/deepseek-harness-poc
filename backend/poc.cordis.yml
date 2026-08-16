@@ -6,10 +6,11 @@
   config:
     providers:
       openai-codex:
-        apiKeyEnv: OPENAI_CODEX_TOKEN
+        apiKeyEnv: OPENAI_TOKEN
         reasoning: high
-        models:
-          - id: gpt-5.6-sol
+      openai:
+        apiKeyEnv: OPENAI_API_KEY
+        reasoning: high
 
 - id: agent-core
   name: '@deepseek-ai/dsh-agent-spine-demo'

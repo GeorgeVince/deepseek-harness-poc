@@ -3,25 +3,43 @@
 A small browser chatbot using:
 
 - the official `deepseek-harness-sdk`
-- pi's OpenAI OAuth login and `gpt-5.6-sol`
+- OpenAI token or API-key authentication and `gpt-5.6-sol`
 - a Python FastMCP server
 - MCP tool discovery behind a fixed `search_tools` / `call_tool` interface
 - PostgreSQL session/message persistence managed by Alembic
 - local OpenTelemetry tracing with Arize Phoenix
 
-## Run with Docker Compose
+## Configure authentication
 
-With an existing OpenAI login in pi:
+```bash
+cp .env.sample .env
+```
+
+Edit `.env` and set exactly one credential:
+
+```dotenv
+# OpenAI Codex bearer token
+OPENAI_TOKEN=your-token
+
+# Or a standard OpenAI API key
+# OPENAI_API_KEY=sk-your-key
+
+OPENAI_MODEL=gpt-5.6-sol
+```
+
+A token selects the `openai-codex` route; an API key selects the standard `openai` route. Change `OPENAI_MODEL` if your account does not provide the default model. `.env` is ignored by Git.
+
+## Run with Docker Compose
 
 ```bash
 docker compose up --build
 ```
 
-Open the chatbot at <http://127.0.0.1:8000> and Phoenix at <http://127.0.0.1:6006>. Compose mounts `~/.pi/agent` read-only for OAuth, stores chats in `postgres_data`, traces in `phoenix_data`, and Harness conversation logs in `.dsh/`. Alembic migrations run automatically when the chatbot starts. FastMCP runs as a stdio child process inside that container, so it does not need a separate service.
+Open the chatbot at <http://127.0.0.1:8000> and Phoenix at <http://127.0.0.1:6006>. Compose stores chats in `postgres_data`, traces in `phoenix_data`, and Harness conversation logs in `.dsh/`. Alembic migrations run automatically when the chatbot starts. FastMCP runs as a stdio child process inside that container, so it does not need a separate service.
 
 ## Run locally
 
-Requirements: [uv](https://docs.astral.sh/uv/), Node.js/npm, and an existing OpenAI login in pi.
+Requirements: [uv](https://docs.astral.sh/uv/), Node.js/npm, and a configured root `.env` file.
 
 ```bash
 docker compose up -d postgres phoenix
@@ -33,7 +51,7 @@ uv run alembic upgrade head
 uv run python app.py
 ```
 
-If pi is not logged in, run pi and use `/login` to connect **OpenAI (ChatGPT Plus/Pro)**, then restart the app. Set `PI_AUTH_FILE` for a non-default local auth path; update the Compose volume for a non-default container path.
+The backend loads `../.env` automatically when run from `backend/`.
 
 ## Arize Phoenix
 
@@ -62,7 +80,7 @@ Agent
 
 The npm JSON-RPC runtime is a temporary workaround: the `0.1.0rc6` Python runtime wheel omits `@deepseek-ai/dsh-mcp-client`. The application still uses the Python SDK; switch back to its bundled runtime once a wheel containing the MCP client is released.
 
-The frontend restores the selected session and reloads its messages from PostgreSQL. After a backend restart, the first turn replays that PostgreSQL transcript into a fresh Harness runtime session; Harness's own logs remain in ignored `.dsh/sessions/`. The OAuth token is snapshotted at startup, so restart after pi refreshes it.
+The frontend restores the selected session and reloads its messages from PostgreSQL. After a backend restart, the first turn replays that PostgreSQL transcript into a fresh Harness runtime session; Harness's own logs remain in ignored `.dsh/sessions/`. Restart the backend after changing credentials.
 
 ## Check
 

@@ -4,4 +4,5 @@ node_modules/
 __pycache__/
 .pytest_cache/
 .env
-.env.phoenix
+.env.*
+!.env.sample

@@ -43,13 +43,14 @@ services:
       - "127.0.0.1:${PORT:-8000}:8000"
     environment:
       HOME: /tmp
-      PI_AUTH_FILE: /pi-agent/auth.json
+      OPENAI_TOKEN: ${OPENAI_TOKEN:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.6-sol}
       DATABASE_URL: postgresql+psycopg://chatbot:chatbot@postgres/chatbot
       PHOENIX_COLLECTOR_ENDPOINT: http://phoenix:6006/v1/traces
       PHOENIX_PROJECT: deepseek-harness-poc
       PHOENIX_CAPTURE_CONTENT: ${PHOENIX_CAPTURE_CONTENT:-true}
     volumes:
-      - "${HOME}/.pi/agent:/pi-agent:ro"
       - ./.dsh:/app/.dsh
 
 volumes:

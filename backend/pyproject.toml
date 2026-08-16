@@ -1,7 +1,7 @@
 [project]
 name = "deepseek-harness-openai-poc"
 version = "0.1.0"
-description = "Python SDK chatbot POC using DeepSeek Harness and OpenAI OAuth"
+description = "Python SDK chatbot POC using DeepSeek Harness and OpenAI credentials"
 requires-python = ">=3.10"
 dependencies = [
   "alembic>=1.14,<2",
@@ -9,6 +9,7 @@ dependencies = [
   "deepseek-harness-sdk==0.1.0rc6",
   "fastmcp==3.4.7",
   "psycopg[binary]>=3.2,<4",
+  "python-dotenv>=1.0,<2",
   "sqlalchemy>=2.0,<3",
 ]
 
