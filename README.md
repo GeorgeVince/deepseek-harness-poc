@@ -7,6 +7,7 @@ A small browser chatbot using:
 - a Python FastMCP server
 - MCP tool discovery behind a fixed `search_tools` / `call_tool` interface
 - PostgreSQL session/message persistence managed by Alembic
+- an assistant-ui React frontend
 - local OpenTelemetry tracing with Arize Phoenix
 
 ## Configure authentication
@@ -43,7 +44,10 @@ Requirements: [uv](https://docs.astral.sh/uv/), Node.js/npm, and a configured ro
 
 ```bash
 docker compose up -d postgres phoenix
-cd backend
+cd frontend
+npm install
+npm run build
+cd ../backend
 export DATABASE_URL=postgresql+psycopg://chatbot:chatbot@localhost/chatbot
 uv sync
 npm install
@@ -51,7 +55,7 @@ uv run alembic upgrade head
 uv run python app.py
 ```
 
-The backend loads `../.env` automatically when run from `backend/`.
+The backend serves `frontend/dist` and loads `../.env` automatically when run from `backend/`.
 
 ## Arize Phoenix
 
@@ -61,7 +65,7 @@ Each chat turn produces an `AGENT` span containing one `LLM` span per model step
 
 ## Layout
 
-- `frontend/` — persistent-session browser UI
+- `frontend/` — Vite/React persistent-session UI built with assistant-ui
 - `backend/` — Python API, FastMCP tools, database schema, Alembic migrations, and unit/integration tests
 - `compose.yml` — chatbot, PostgreSQL, and local Arize Phoenix services
 - `compose.test.yml` — Docker Compose integration-test runner

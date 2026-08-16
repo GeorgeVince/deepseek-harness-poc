@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import mimetypes
 import os
 import re
 import sys
@@ -24,7 +25,7 @@ import telemetry
 
 ROOT = Path(__file__).resolve().parent
 PROJECT_ROOT = ROOT.parent
-PAGE = (PROJECT_ROOT / "frontend" / "index.html").read_bytes()
+FRONTEND_DIST = PROJECT_ROOT / "frontend" / "dist"
 MAX_BODY_BYTES = 20_000
 
 
@@ -108,8 +109,11 @@ class ChatHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         path = urlparse(self.path).path
-        if path == "/":
-            self._send(200, "text/html; charset=utf-8", PAGE)
+        if path in {"/", "/index.html"}:
+            self._static(FRONTEND_DIST / "index.html")
+            return
+        if re.fullmatch(r"/assets/[A-Za-z0-9._-]+", path):
+            self._static(FRONTEND_DIST / path.removeprefix("/"))
             return
         if path == "/api/sessions":
             self._json(200, {"sessions": database.list_sessions()})
@@ -191,6 +195,17 @@ class ChatHandler(BaseHTTPRequestHandler):
 
     def _json(self, status: int, value: dict[str, Any]) -> None:
         self._send(status, "application/json", json.dumps(value).encode())
+
+    def _static(self, path: Path) -> None:
+        try:
+            body = path.read_bytes()
+        except FileNotFoundError:
+            self.send_error(404)
+            return
+        content_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
+        if path.suffix == ".html":
+            content_type += "; charset=utf-8"
+        self._send(200, content_type, body)
 
     def _send(self, status: int, content_type: str, body: bytes) -> None:
         self.send_response(status)

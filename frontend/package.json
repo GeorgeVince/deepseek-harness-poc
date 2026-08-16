@@ -1,0 +1,14 @@
+{
+  "private": true,
+  "scripts": {
+    "build": "vite build"
+  },
+  "dependencies": {
+    "@assistant-ui/react": "0.15.14",
+    "react": "19.2.0",
+    "react-dom": "19.2.0"
+  },
+  "devDependencies": {
+    "vite": "7.2.2"
+  }
+}
