@@ -1,6 +1,25 @@
-TEST_COMPOSE = docker compose -p deepseek-harness-test -f compose.test.yml
+COMPOSE = docker compose
+TEST_COMPOSE = $(COMPOSE) -p deepseek-harness-test -f compose.test.yml
 
-.PHONY: test test-unit test-integration
+.PHONY: start stop restart rebuild logs status test test-unit test-integration
+
+start:
+	$(COMPOSE) up -d
+
+stop:
+	$(COMPOSE) down
+
+restart:
+	$(COMPOSE) restart
+
+rebuild:
+	$(COMPOSE) up -d --build
+
+logs:
+	$(COMPOSE) logs -f
+
+status:
+	$(COMPOSE) ps
 
 test: test-unit test-integration
 
