@@ -67,12 +67,22 @@ const parseArgs = (value) => {
   }
 };
 
-function ToolCall({ toolName, args, argsText, result, isError }) {
+const formatValue = (value) => {
+  if (typeof value !== "string") return JSON.stringify(value, null, 2);
+  try {
+    return JSON.stringify(JSON.parse(value), null, 2);
+  } catch {
+    return value;
+  }
+};
+
+function ToolCall({ toolName, args, result, isError }) {
+  const name = toolName.replace("mcp__python__", "");
   return (
     <details className={`tool-call${isError ? " tool-error" : ""}`} open={result === undefined}>
-      <summary>{result === undefined ? "Calling" : isError ? "Failed" : "Finished"} {toolName}</summary>
-      <pre>{argsText || JSON.stringify(args, null, 2)}</pre>
-      {result !== undefined && <pre className="tool-result">{String(result)}</pre>}
+      <summary><span className="trace-label">Decision trace</span> {result === undefined ? "Running" : isError ? "Failed" : "Completed"} {name}</summary>
+      <pre>{formatValue(args)}</pre>
+      {result !== undefined && <pre className="tool-result">{formatValue(result)}</pre>}
     </details>
   );
 }
@@ -117,7 +127,17 @@ function ChatPane({ session, initialMessages, onSessionsChanged }) {
     initialMessages.map((message) => ({
       id: `db-${message.id}`,
       role: message.role,
-      content: [{ type: "text", text: message.content }],
+      content: [
+        ...(message.tool_calls || []).map((call) => ({
+          type: "tool-call",
+          toolCallId: call.id,
+          toolName: call.name,
+          args: parseArgs(call.arguments),
+          argsText: call.arguments || "{}",
+          ...(call.result !== null && { result: call.result, isError: call.is_error }),
+        })),
+        { type: "text", text: message.content },
+      ],
       createdAt: new Date(message.created_at),
       ...(message.role === "assistant" && { status: { type: "complete", reason: "unknown" } }),
     })),

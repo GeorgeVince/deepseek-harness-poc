@@ -75,13 +75,20 @@ def browser_event(notification: Notification) -> tuple[str, dict[str, Any]] | No
         return None
     kind, data = event.get("type"), event["data"]
     if kind == "tool/call":
-        return "tool_call", {
-            "id": data.get("callId"),
-            "name": data.get("name") or "tool",
-            "arguments": data.get("arguments"),
-        }
+        call_id = data.get("callId")
+        if not isinstance(call_id, str) or not call_id:
+            return None
+        name = data.get("name")
+        if not isinstance(name, str) or not name:
+            name = "tool"
+        arguments = data.get("arguments")
+        if not isinstance(arguments, str):
+            arguments = json.dumps(arguments, separators=(",", ":"))
+        return "tool_call", {"id": call_id, "name": name, "arguments": arguments}
     if kind == "tool/result":
         output, is_error, call_id = telemetry._tool_output(data)
+        if not call_id:
+            return None
         return "tool_result", {"id": call_id, "result": output, "is_error": is_error}
     if kind == "assistant/message":
         message = data.get("message")
@@ -163,15 +170,31 @@ class ChatHandler(BaseHTTPRequestHandler):
         self._sse("status", {"text": "Thinking…"})
         try:
             prompt = message if session_id in self.primed_sessions else resumed_prompt(message, history)
-            database.add_message(session_id, "user", message)
+            turn_id = uuid.uuid4()
+            database.add_message(session_id, "user", message, turn_id)
             runtime_session_id = f"{session_id.hex}-{self.harness_process_id}"
 
             def emit(notification: Notification) -> None:
-                if notification.payload.get("sessionId") != runtime_session_id:
-                    return
                 event = browser_event(notification)
-                if event:
-                    self._sse(*event)
+                if not event:
+                    return
+                kind, value = event
+                agent_session_id = str(notification.payload.get("sessionId") or "unknown")
+                if kind == "tool_call":
+                    database.add_tool_call(
+                        session_id,
+                        turn_id,
+                        value["id"],
+                        agent_session_id,
+                        value["name"],
+                        value["arguments"],
+                    )
+                elif kind == "tool_result":
+                    database.complete_tool_call(
+                        session_id, value["id"], value["result"], value["is_error"]
+                    )
+                if agent_session_id == runtime_session_id or kind in {"tool_call", "tool_result"}:
+                    self._sse(kind, value)
 
             result = telemetry.run_agent(
                 self.harness, prompt, runtime_session_id, str(session_id), on_notification=emit
@@ -179,7 +202,7 @@ class ChatHandler(BaseHTTPRequestHandler):
             if result.finish_reason == "error" or not result.final_response:
                 raise RuntimeError("Agent turn failed")
             self.primed_sessions.add(session_id)
-            database.add_message(session_id, "assistant", result.final_response)
+            database.add_message(session_id, "assistant", result.final_response, turn_id)
             self._sse("done", {"response": result.final_response, "finish_reason": result.finish_reason})
         except Exception as error:
             self._sse("error", {"error": str(error)})

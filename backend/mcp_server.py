@@ -1,110 +1,187 @@
 #!/usr/bin/env python3
-"""FastMCP gateway that discovers private Python tools and exposes search/call."""
+"""Small UK weather and fictional-activity tool server."""
 
-import re
-import secrets
+import json
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import Literal
+from urllib.parse import urlencode
+from urllib.request import urlopen
 
-from fastmcp import Client, FastMCP
+from fastmcp import FastMCP
 
-catalog = FastMCP("Example Python Tools")
-gateway = FastMCP(
-    "Python Tool Search",
-    instructions="Search for a relevant tool before calling it. Pass search_id to call_tool and only call a returned tool.",
-)
-_searches: dict[str, set[str]] = {}
+server = FastMCP("UK Weather and Activities")
+
+MONTHS = {
+    "january": 1,
+    "february": 2,
+    "march": 3,
+    "april": 4,
+    "may": 5,
+    "june": 6,
+    "july": 7,
+    "august": 8,
+    "september": 9,
+    "october": 10,
+    "november": 11,
+    "december": 12,
+}
+BASE_MONTHLY_C = (5, 6, 8, 10, 13, 16, 18, 18, 15, 11, 8, 6)
+CITY_OFFSETS = {
+    "London": 2,
+    "Edinburgh": -1,
+    "Manchester": 0,
+    "Cardiff": 1,
+    "Belfast": 0,
+}
+ACTIVITIES = {
+    "London": {
+        "wet": ["The Underground Art Hunt", "The Clockwork Tea Lab"],
+        "fair": ["The Thames Story Trail", "The Hidden Gardens Quest"],
+    },
+    "Edinburgh": {
+        "wet": ["The Old Town Puzzle Vault", "The Tartan Tales Workshop"],
+        "fair": ["The Seven Hills Photo Quest", "The Secret Close Story Walk"],
+    },
+    "Manchester": {
+        "wet": ["The Northern Quarter Sound Lab", "The Cottonopolis Maker Hall"],
+        "fair": ["The Canal Code Trail", "The Bee Mural Safari"],
+    },
+    "Cardiff": {
+        "wet": ["The Dragon Lore Studio", "The Arcades Mystery Hunt"],
+        "fair": ["The Bay Wind Quest", "The Castle Walls Story Trail"],
+    },
+    "Belfast": {
+        "wet": ["The Linen Legends Workshop", "The Shipyard Signal Room"],
+        "fair": ["The Maritime Mural Trail", "The Cave Hill Story Quest"],
+    },
+}
+SEASONAL_ACTIVITY = {
+    "winter": "The Winter Lantern Club",
+    "spring": "The Spring City Bloom Hunt",
+    "summer": "The Long-Evening Street Picnic",
+    "autumn": "The Autumn Legends Trail",
+}
 
 
-@catalog.tool
-def calculate_total(prices: list[float], tax_rate: float = 0) -> dict[str, float]:
-    """Calculate a cart, order, or invoice subtotal, tax, and total."""
-    subtotal = sum(prices)
-    tax = subtotal * tax_rate
-    return {"subtotal": subtotal, "tax": tax, "total": subtotal + tax}
+def _month(month: str | None) -> int:
+    if month is None:
+        return datetime.now(timezone.utc).month
+    number = MONTHS.get(month.strip().lower())
+    if number is None:
+        raise ValueError("month must be a full English month name")
+    return number
 
 
-@catalog.tool
-def convert_temperature(
-    value: float,
-    from_unit: Literal["celsius", "fahrenheit"],
-    to_unit: Literal["celsius", "fahrenheit"],
-) -> dict[str, float | str]:
-    """Convert a temperature between Celsius and Fahrenheit."""
-    if from_unit == to_unit:
-        result = value
-    elif from_unit == "celsius":
-        result = value * 9 / 5 + 32
-    else:
-        result = (value - 32) * 5 / 9
-    return {"value": result, "unit": to_unit}
+def _city(value: str) -> str:
+    normalized = value.strip().casefold()
+    for city in CITY_OFFSETS:
+        if city.casefold() == normalized:
+            return city
+    raise ValueError(f"city must be one of: {', '.join(CITY_OFFSETS)}")
 
 
-@catalog.tool
-def text_statistics(text: str) -> dict[str, int]:
-    """Count words, Unicode characters, and lines in text."""
+def _condition(code: int) -> str:
+    if code == 0:
+        return "clear"
+    if code in {1, 2, 3, 45, 48}:
+        return "cloudy"
+    if code in {51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82}:
+        return "rainy"
+    if code in {71, 73, 75, 77, 85, 86}:
+        return "snowy"
+    if code in {95, 96, 99}:
+        return "stormy"
+    return "mixed"
+
+
+def _get_json(url: str) -> dict:
+    try:
+        with urlopen(url, timeout=10) as response:  # noqa: S310 - fixed HTTPS APIs only
+            data = json.load(response)
+        if not isinstance(data, dict):
+            raise ValueError("unexpected response")
+        return data
+    except Exception as error:
+        raise RuntimeError("weather service is unavailable") from error
+
+
+@server.tool
+def get_uk_weather(location: str, month: str | None = None) -> dict:
+    """Get the current temperature for a UK location, or a rough monthly estimate for a supported city."""
+    if month is not None:
+        city = _city(location)
+        number = _month(month)
+        return {
+            "location": city,
+            "month": month.strip().title(),
+            "estimated_average_c": BASE_MONTHLY_C[number - 1] + CITY_OFFSETS[city],
+            "kind": "rough_climate_estimate",
+        }
+
+    location = location.strip()
+    if not location:
+        raise ValueError("location is required")
+    query = urlencode({"name": location, "count": 1, "language": "en", "format": "json", "countryCode": "GB"})
+    places = _get_json(f"https://geocoding-api.open-meteo.com/v1/search?{query}").get("results")
+    if not isinstance(places, list) or not places:
+        raise ValueError("UK location was not found")
+    place = places[0]
+    if (
+        not isinstance(place, dict)
+        or place.get("country_code") != "GB"
+        or not isinstance(place.get("name"), str)
+        or not all(isinstance(place.get(key), (int, float)) for key in ("latitude", "longitude"))
+    ):
+        raise RuntimeError("weather service returned an invalid location")
+    query = urlencode({
+        "latitude": place["latitude"],
+        "longitude": place["longitude"],
+        "current": "temperature_2m,weather_code",
+        "timezone": "Europe/London",
+    })
+    current = _get_json(f"https://api.open-meteo.com/v1/forecast?{query}").get("current")
+    if not isinstance(current, dict) or not isinstance(current.get("temperature_2m"), (int, float)):
+        raise RuntimeError("weather service returned no current conditions")
+    try:
+        condition = _condition(int(current["weather_code"]))
+        observed_at = str(current["time"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise RuntimeError("weather service returned invalid current conditions") from error
     return {
-        "words": len(text.split()),
-        "characters": len(text),
-        "lines": len(text.splitlines()) or 1,
+        "location": f"{place['name']}, {place.get('admin1') or 'UK'}",
+        "temperature_c": current["temperature_2m"],
+        "condition": condition,
+        "observed_at": observed_at,
+        "source": "Open-Meteo",
     }
 
 
-@catalog.tool
-def current_utc_time() -> dict[str, str]:
-    """Get the current UTC date and time clock value."""
-    return {"utc": datetime.now(timezone.utc).isoformat()}
-
-
-@catalog.tool
-def lookup_support_hours(day: str) -> dict[str, str]:
-    """Look up customer support business opening hours for a weekday or weekend day."""
-    normalized = day.strip().lower()
-    hours = "09:00-17:00" if normalized in {"monday", "tuesday", "wednesday", "thursday", "friday"} else "closed"
-    return {"day": normalized, "hours": hours}
-
-
-def _tool_schema(tool: Any) -> dict[str, Any]:
-    return getattr(tool, "inputSchema", getattr(tool, "input_schema", {}))
-
-
-def _rank(query: str, tools: list[Any], limit: int) -> list[dict[str, Any]]:
-    words = {word for word in re.findall(r"[a-z0-9]+", query.lower()) if len(word) > 2}
-    ranked = []
-    for tool in tools:
-        haystack = f"{tool.name} {tool.description or ''}".lower()
-        score = sum(2 if word in tool.name.lower() else 1 for word in words if word in haystack)
-        if score:
-            ranked.append((score, tool.name, tool))
-    ranked.sort(key=lambda item: (-item[0], item[1]))
-    return [
-        {"name": tool.name, "description": tool.description, "input_schema": _tool_schema(tool)}
-        for _, _, tool in ranked[:limit]
-    ]
-
-
-@gateway.tool
-async def search_tools(query: str, limit: int = 3) -> dict[str, Any]:
-    """Search available tools by capability. Returns a search_id required by call_tool."""
-    async with Client(catalog) as client:
-        matches = _rank(query, await client.list_tools(), max(1, min(limit, 10)))
-    search_id = secrets.token_urlsafe(12)
-    _searches[search_id] = {match["name"] for match in matches}
-    if len(_searches) > 100:
-        _searches.pop(next(iter(_searches)))
-    return {"search_id": search_id, "matches": matches}
-
-
-@gateway.tool
-async def call_tool(search_id: str, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    """Call one tool returned by search_tools, passing its search_id and schema-matching arguments."""
-    allowed = _searches.pop(search_id, None)
-    if allowed is None or name not in allowed:
-        raise ValueError("Tool was not returned by that search; call search_tools first")
-    async with Client(catalog) as client:
-        result = await client.call_tool(name, arguments)
-        return {"tool": name, "result": result.data}
+@server.tool
+def suggest_uk_activities(
+    city: Literal["London", "Edinburgh", "Manchester", "Cardiff", "Belfast"],
+    weather: str,
+    month: str | None = None,
+) -> dict:
+    """Return fictional city activities selected for the supplied weather and time of year."""
+    weather = weather.strip()
+    if not weather:
+        raise ValueError("weather is required")
+    number = _month(month)
+    season = ("winter", "spring", "summer", "autumn")[((number % 12) // 3)]
+    wet = any(word in weather.casefold() for word in ("rain", "snow", "storm", "wet"))
+    names = [*ACTIVITIES[city]["wet" if wet else "fair"], SEASONAL_ACTIVITY[season]]
+    return {
+        "city": city,
+        "weather": weather,
+        "month": list(MONTHS)[number - 1].title(),
+        "season": season,
+        "fictional": True,
+        "activities": [
+            {"name": name, "why": f"Designed for {weather.lower()} {season} days in {city}."}
+            for name in names
+        ],
+    }
 
 
 if __name__ == "__main__":
-    gateway.run()
+    server.run()

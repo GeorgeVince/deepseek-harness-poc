@@ -4,8 +4,8 @@ A small browser chatbot using:
 
 - the official `deepseek-harness-sdk`
 - OpenAI token or API-key authentication and `gpt-5.6-sol`
-- a Python FastMCP server
-- MCP tool discovery behind a fixed `search_tools` / `call_tool` interface
+- a Python FastMCP server with UK weather and fictional activity tools
+- in-process weather and activities subagents routed by a coordinator
 - PostgreSQL session/message persistence
 - an assistant-ui React frontend
 - local OpenTelemetry tracing with Arize Phoenix
@@ -69,22 +69,20 @@ Each chat turn produces an `AGENT` span containing one `LLM` span per model step
 - `compose.yml` — chatbot, PostgreSQL, and local Arize Phoenix services
 - `compose.test.yml` — Docker Compose integration-test runner
 
-## Tool flow
+## Agent and tool flow
 
 ```text
-Agent
-  -> mcp__python__search_tools
-  -> FastMCP discovers and ranks the private Python tool catalog
-  -> returns a one-use search_id
-  -> mcp__python__call_tool(search_id, ...)
-  -> selected Python function
+Coordinator
+  ├─ weather request ────> weather agent ────> get_uk_weather
+  └─ activities request ─> activities agent ─┬─> get_uk_weather
+                                             └─> suggest_uk_activities
 ```
 
-`mcp_server.py` contains five example Python tools. Harness sees only the gateway's two stable tools, preventing every private schema from consuming model context. `call_tool` rejects calls without a valid one-use `search_id`, enforcing search before execution.
+The coordinator delegates to fresh in-process Harness agents with separate personas and tool allowlists. `get_uk_weather` uses Open-Meteo for current UK conditions and rough built-in monthly estimates for five cities. `suggest_uk_activities` returns explicitly fictional suggestions for those cities based on weather and season. The old search gateway and unrelated example tools were removed.
 
 The npm JSON-RPC runtime is a temporary workaround: the `0.1.0rc6` Python runtime wheel omits `@deepseek-ai/dsh-mcp-client`. The application still uses the Python SDK; switch back to its bundled runtime once a wheel containing the MCP client is released.
 
-The frontend restores the selected session and reloads its messages from PostgreSQL. After a backend restart, the first turn replays that PostgreSQL transcript into a fresh Harness runtime session; Harness's own logs remain in ignored `.dsh/sessions/`. Restart the backend after changing credentials.
+The frontend restores messages and tool calls from PostgreSQL. Tool arguments, results, errors, and nested specialist calls are grouped by turn and rendered as a persisted decision trace; this is observable execution data, not private model chain-of-thought. After a backend restart, the first turn replays the message transcript into a fresh Harness runtime session; Harness's full logs remain in ignored `.dsh/sessions/`. Restart the backend after changing credentials.
 
 ## Test
 

@@ -7,6 +7,10 @@
     "@deepseek-ai/dsh-sdk-jsonrpc-demo": "0.1.0-rc.6",
     "@deepseek-ai/dsh-sdk-jsonrpc-server": "0.1.0-rc.6",
     "@deepseek-ai/dsh-session-checkpoint-policy": "0.1.0-rc.6",
-    "@deepseek-ai/dsh-session-persistence-jsonl": "0.1.0-rc.6"
+    "@deepseek-ai/dsh-session-persistence-jsonl": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-subagent": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-subagent-in-process-driver": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-subagent-spawn-in-process": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-tool-subagent": "0.1.0-rc.6"
   }
 }

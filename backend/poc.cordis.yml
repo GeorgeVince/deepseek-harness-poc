@@ -17,12 +17,45 @@
   config:
     includeHarnessIdentity: false
     includeRuntimeContext: false
-    persona: You are a concise, helpful assistant. You must use search_tools before call_tool whenever a tool could answer the request. Never guess a hidden tool name.
+    persona: You are the coordinator. Delegate weather-only requests to ask_weather_agent. Delegate activities and things-to-do requests only to ask_activities_agent, even when they mention weather; that agent can fetch weather itself. Give each agent a standalone prompt with all relevant context and do not answer specialist requests yourself.
     workspaceContext: false
     skills:
       enabled: false
     toolBash: false
     toolJobs: false
+
+- id: subagents
+  name: '@deepseek-ai/dsh-subagent'
+
+- id: subagent-spawn
+  name: '@deepseek-ai/dsh-subagent-spawn-in-process'
+  config:
+    providerName: spawn
+
+- id: weather-agent
+  name: '@deepseek-ai/dsh-tool-subagent'
+  config:
+    provider: spawn
+    toolName: ask_weather_agent
+    enableRunInBackground: false
+    maxDepth: 1
+    toolFilter:
+      allow:
+        - mcp__python__get_uk_weather
+    persona: You are a weather specialist. Always use get_uk_weather to answer the delegated weather question. Ask for a location when needed and distinguish live conditions from rough monthly estimates.
+
+- id: activities-agent
+  name: '@deepseek-ai/dsh-tool-subagent'
+  config:
+    provider: spawn
+    toolName: ask_activities_agent
+    enableRunInBackground: false
+    maxDepth: 1
+    toolFilter:
+      allow:
+        - mcp__python__get_uk_weather
+        - mcp__python__suggest_uk_activities
+    persona: You are an activities specialist. For current recommendations, get the weather first, then use suggest_uk_activities. Return concise suggestions and clearly state that the activities are fictional.
 
 # rc.6's bundled Python runtime omits this plugin, so app.py launches the npm
 # JSON-RPC runtime until the next runtime wheel includes it.
