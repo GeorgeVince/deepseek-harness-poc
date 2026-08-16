@@ -34,6 +34,7 @@ FROM python:3.12-slim-bookworm AS sandbox-runner
 RUN apt-get update && apt-get install -y --no-install-recommends bash bubblewrap && rm -rf /var/lib/apt/lists/* \
     && groupadd -g 1000 sandbox && useradd -u 1000 -g sandbox sandbox \
     && mkdir -p /app /workspace /run/sandbox && chown -R sandbox:sandbox /app /workspace /run/sandbox
+RUN pip install --no-cache-dir formualizer==0.8.4
 COPY --chown=sandbox:sandbox backend/sandbox_runner.py /app/sandbox_runner.py
 ENV PYTHONDONTWRITEBYTECODE=1 SANDBOX_SOCKET=/run/sandbox/runner.sock
 USER sandbox:sandbox

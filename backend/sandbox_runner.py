@@ -13,7 +13,7 @@ SOCKET_PATH = Path(os.environ.get("SANDBOX_SOCKET", "/run/sandbox/runner.sock"))
 WORKSPACE = Path("/workspace")
 MAX_REQUEST_BYTES = 20_000
 MAX_OUTPUT_BYTES = 32_000
-MAX_FILE_BYTES = 8 * 1024 * 1024
+MAX_FILE_BYTES = 64 * 1024 * 1024
 MAX_TIMEOUT_SECONDS = 30
 
 

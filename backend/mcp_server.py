@@ -192,7 +192,7 @@ def run_bash(command: str, timeout_seconds: int = 30) -> dict:
 
 @server.tool
 def run_python(code: str, timeout_seconds: int = 30) -> dict:
-    """Run Python code in the isolated, credential-free workspace sidecar."""
+    """Run Python in the isolated workspace. Formualizer 0.8.4 is installed for XLSX: use formualizer.load_workbook(path) or Workbook(), then write Workbook.to_xlsx_bytes() to a new /workspace file."""
     return _run_sandboxed("python", code, timeout_seconds)
 
 

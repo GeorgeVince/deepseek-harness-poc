@@ -39,7 +39,14 @@ docker compose up --build
 
 Open the chatbot at <http://127.0.0.1:8000> and Phoenix at <http://127.0.0.1:6006>. Compose stores chats in `postgres_data`, traces in `phoenix_data`, the agent's writable files in `agent_workspace`, and Harness conversation logs in `.dsh/`. The chatbot creates its tables at startup. FastMCP runs as a stdio child process inside the chatbot container and calls the sandbox sidecar over a shared Unix socket.
 
-The coordinator's `run_bash` and `run_python` tools execute in a credential-free sidecar with no network. Its root filesystem is read-only; only `/workspace` and ephemeral `/tmp` are writable. Bubblewrap adds a private PID, mount, IPC, and network namespace per command. Compose also caps the sidecar at one CPU, 256 MB, 64 processes, 30 seconds, 8 MB files, and a 32 KB returned-output tail. Specialist agents retain their existing tool allowlists and cannot execute code.
+The coordinator's `run_bash` and `run_python` tools execute in a credential-free sidecar with no network. Its root filesystem is read-only; only `/workspace` and ephemeral `/tmp` are writable. Bubblewrap adds a private PID, mount, IPC, and network namespace per command. Compose also caps the sidecar at one CPU, 256 MB, 64 processes, 30 seconds, 64 MB output files, and a 32 KB returned-output tail. Specialist agents retain their existing tool allowlists and cannot execute code.
+
+[Formualizer](https://github.com/psu3d0/formualizer) 0.8.4 is installed in the sidecar, so the coordinator can load, edit, recalculate, and export XLSX workbooks through `run_python`. Until the UI has file attachments, copy workbooks through the shared workspace:
+
+```bash
+docker compose exec -T sandbox-runner sh -c 'cat > /workspace/input.xlsx' < input.xlsx
+docker compose exec -T sandbox-runner cat /workspace/output.xlsx > output.xlsx
+```
 
 ## Run locally
 

@@ -41,5 +41,23 @@ print(json.dumps({'env': dict(os.environ), 'visible': visible.decode(errors='ign
     assert result["exit_code"] == 0
     assert Path("/workspace/sidecar-check.txt").read_text() == "isolated"
 
+    result = call(
+        "python",
+        """from pathlib import Path
+import formualizer as fz
+wb = fz.Workbook()
+wb.add_sheet('Summary')
+wb.set_value('Summary', 1, 1, 20)
+wb.set_value('Summary', 2, 1, 22)
+wb.set_formula('Summary', 1, 2, '=SUM(A1:A2)')
+wb.evaluate_all()
+Path('/workspace/formualizer-check.xlsx').write_bytes(wb.to_xlsx_bytes())
+print(wb.evaluate_cell('Summary', 1, 2))
+""",
+    )
+    assert result["exit_code"] == 0
+    assert float(result["stdout"]) == 42.0
+    assert Path("/workspace/formualizer-check.xlsx").read_bytes().startswith(b"PK")
+
     result = call("python", "import time; time.sleep(5)", timeout=1)
     assert result["timed_out"] is True
