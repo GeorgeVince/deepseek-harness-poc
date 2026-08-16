@@ -2,6 +2,8 @@
 """Small UK weather and fictional-activity tool server."""
 
 import json
+import os
+import socket
 from datetime import datetime, timezone
 from typing import Literal
 from urllib.parse import urlencode
@@ -9,7 +11,9 @@ from urllib.request import urlopen
 
 from fastmcp import FastMCP
 
-server = FastMCP("UK Weather and Activities")
+server = FastMCP("UK Weather, Activities, and Sandbox")
+SANDBOX_SOCKET = os.environ.get("SANDBOX_SOCKET", "/run/sandbox/runner.sock")
+MAX_SANDBOX_RESPONSE_BYTES = 70_000
 
 MONTHS = {
     "january": 1,
@@ -105,6 +109,30 @@ def _get_json(url: str) -> dict:
         raise RuntimeError("weather service is unavailable") from error
 
 
+def _run_sandboxed(kind: str, code: str, timeout_seconds: int) -> dict:
+    if not isinstance(timeout_seconds, int) or not 1 <= timeout_seconds <= 30:
+        raise ValueError("timeout_seconds must be between 1 and 30")
+    if not isinstance(code, str) or not code.strip() or len(code.encode()) > 20_000:
+        raise ValueError("code must contain 1 to 20000 bytes")
+    request = json.dumps({"kind": kind, "code": code, "timeout": timeout_seconds}).encode() + b"\n"
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(timeout_seconds + 5)
+            client.connect(SANDBOX_SOCKET)
+            client.sendall(request)
+            response = client.makefile("rb").readline(MAX_SANDBOX_RESPONSE_BYTES + 1)
+    except (OSError, TimeoutError) as error:
+        raise RuntimeError("sandbox runner is unavailable") from error
+    if len(response) > MAX_SANDBOX_RESPONSE_BYTES:
+        raise RuntimeError("sandbox runner returned too much data")
+    result = json.loads(response)
+    if not isinstance(result, dict):
+        raise RuntimeError("sandbox runner returned an invalid response")
+    if result.get("error"):
+        raise RuntimeError(str(result["error"]))
+    return result
+
+
 @server.tool
 def get_uk_weather(location: str, month: str | None = None) -> dict:
     """Get the current temperature for a UK location, or a rough monthly estimate for a supported city."""
@@ -154,6 +182,18 @@ def get_uk_weather(location: str, month: str | None = None) -> dict:
         "observed_at": observed_at,
         "source": "Open-Meteo",
     }
+
+
+@server.tool
+def run_bash(command: str, timeout_seconds: int = 30) -> dict:
+    """Run a Bash command in the isolated, credential-free workspace sidecar."""
+    return _run_sandboxed("bash", command, timeout_seconds)
+
+
+@server.tool
+def run_python(code: str, timeout_seconds: int = 30) -> dict:
+    """Run Python code in the isolated, credential-free workspace sidecar."""
+    return _run_sandboxed("python", code, timeout_seconds)
 
 
 @server.tool

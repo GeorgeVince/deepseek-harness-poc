@@ -249,6 +249,8 @@ def main() -> None:
 
     session_root = PROJECT_ROOT / ".dsh" / "sessions"
     session_root.mkdir(parents=True, exist_ok=True)
+    agent_workspace = Path(os.environ.get("AGENT_WORKSPACE", PROJECT_ROOT)).resolve()
+    agent_workspace.mkdir(parents=True, exist_ok=True)
 
     runtime = ROOT / "node_modules" / ".bin" / "dsh-jsonrpc-agent"
     if not runtime.exists():
@@ -257,13 +259,14 @@ def main() -> None:
     harness = DeepSeekHarness(
         provider=provider,
         model=model,
-        cwd=str(PROJECT_ROOT),
+        cwd=str(agent_workspace),
         session_root=str(session_root),
         cordis=str(ROOT / "poc.cordis.yml"),
         runtime_bin=str(runtime),
         env={
             "MCP_PYTHON": sys.executable,
             "MCP_SERVER": str(ROOT / "mcp_server.py"),
+            "DATABASE_URL": "",  # Do not expose app database credentials to Harness/MCP children.
         },
     )
     # ponytail: rc.6 has no plugin-readiness handshake; give MCP discovery time.

@@ -1,4 +1,29 @@
 services:
+  sandbox-runner:
+    build:
+      context: .
+      target: sandbox-runner
+    init: true
+    network_mode: none
+    pids_limit: 64
+    mem_limit: 256m
+    cpus: 1
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=16m
+    volumes:
+      - agent_workspace:/workspace
+      - sandbox_socket:/run/sandbox
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json,socket; s=socket.socket(socket.AF_UNIX); s.connect('/run/sandbox/runner.sock'); s.sendall(b'{\\\"kind\\\":\\\"health\\\"}\\n'); assert json.loads(s.recv(100))['ok']"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+
   postgres:
     image: postgres:17-alpine
     environment:
@@ -18,5 +43,15 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      sandbox-runner:
+        condition: service_healthy
     environment:
       DATABASE_URL: postgresql://chatbot:chatbot@postgres/chatbot
+      SANDBOX_SOCKET: /run/sandbox/runner.sock
+    volumes:
+      - agent_workspace:/workspace:ro
+      - sandbox_socket:/run/sandbox:ro
+
+volumes:
+  agent_workspace:
+  sandbox_socket:

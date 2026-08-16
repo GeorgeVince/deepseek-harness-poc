@@ -8,7 +8,8 @@ RUN npm run build
 
 FROM node:24-bookworm-slim AS base
 
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/* \
+    && mkdir /workspace && chown 1000:1000 /workspace
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 ENV UV_PYTHON_INSTALL_DIR=/opt/uv/python
 WORKDIR /app/backend
@@ -28,3 +29,12 @@ CMD ["pytest", "-q", "tests/integration"]
 FROM base AS production
 EXPOSE 8000
 CMD ["python", "app.py", "--host", "0.0.0.0", "--port", "8000"]
+
+FROM python:3.12-slim-bookworm AS sandbox-runner
+RUN apt-get update && apt-get install -y --no-install-recommends bash bubblewrap && rm -rf /var/lib/apt/lists/* \
+    && groupadd -g 1000 sandbox && useradd -u 1000 -g sandbox sandbox \
+    && mkdir -p /app /workspace /run/sandbox && chown -R sandbox:sandbox /app /workspace /run/sandbox
+COPY --chown=sandbox:sandbox backend/sandbox_runner.py /app/sandbox_runner.py
+ENV PYTHONDONTWRITEBYTECODE=1 SANDBOX_SOCKET=/run/sandbox/runner.sock
+USER sandbox:sandbox
+CMD ["python", "/app/sandbox_runner.py"]

@@ -6,6 +6,7 @@ A small browser chatbot using:
 - OpenAI token or API-key authentication and `gpt-5.6-sol`
 - a Python FastMCP server with UK weather and fictional activity tools
 - in-process weather and activities subagents routed by a coordinator
+- sandboxed Bash/Python execution in a dedicated agent workspace
 - PostgreSQL session/message persistence
 - an assistant-ui React frontend
 - local OpenTelemetry tracing with Arize Phoenix
@@ -36,11 +37,13 @@ A token selects the `openai-codex` route; an API key selects the standard `opena
 docker compose up --build
 ```
 
-Open the chatbot at <http://127.0.0.1:8000> and Phoenix at <http://127.0.0.1:6006>. Compose stores chats in `postgres_data`, traces in `phoenix_data`, and Harness conversation logs in `.dsh/`. The chatbot creates its tables at startup. FastMCP runs as a stdio child process inside that container, so it does not need a separate service.
+Open the chatbot at <http://127.0.0.1:8000> and Phoenix at <http://127.0.0.1:6006>. Compose stores chats in `postgres_data`, traces in `phoenix_data`, the agent's writable files in `agent_workspace`, and Harness conversation logs in `.dsh/`. The chatbot creates its tables at startup. FastMCP runs as a stdio child process inside the chatbot container and calls the sandbox sidecar over a shared Unix socket.
+
+The coordinator's `run_bash` and `run_python` tools execute in a credential-free sidecar with no network. Its root filesystem is read-only; only `/workspace` and ephemeral `/tmp` are writable. Bubblewrap adds a private PID, mount, IPC, and network namespace per command. Compose also caps the sidecar at one CPU, 256 MB, 64 processes, 30 seconds, 8 MB files, and a 32 KB returned-output tail. Specialist agents retain their existing tool allowlists and cannot execute code.
 
 ## Run locally
 
-Requirements: [uv](https://docs.astral.sh/uv/), Node.js/npm, and a configured root `.env` file.
+Requirements: [uv](https://docs.astral.sh/uv/), Node.js/npm, and a configured root `.env` file. The sandbox tools require the Docker Compose setup; a directly launched backend has no local execution fallback.
 
 ```bash
 docker compose up -d postgres phoenix
@@ -65,8 +68,8 @@ Each chat turn produces an `AGENT` span containing one `LLM` span per model step
 ## Layout
 
 - `frontend/` — Vite/React persistent-session UI built with assistant-ui
-- `backend/` — Python API, FastMCP tools, database schema, and unit/integration tests
-- `compose.yml` — chatbot, PostgreSQL, and local Arize Phoenix services
+- `backend/` — Python API, FastMCP tools, sandbox runner, database schema, and tests
+- `compose.yml` — chatbot, sandbox sidecar, PostgreSQL, and local Arize Phoenix services
 - `compose.test.yml` — Docker Compose integration-test runner
 
 ## Agent and tool flow
@@ -74,8 +77,9 @@ Each chat turn produces an `AGENT` span containing one `LLM` span per model step
 ```text
 Coordinator
   ├─ weather request ────> weather agent ────> get_uk_weather
-  └─ activities request ─> activities agent ─┬─> get_uk_weather
-                                             └─> suggest_uk_activities
+  ├─ activities request ─> activities agent ─┬─> get_uk_weather
+  │                                          └─> suggest_uk_activities
+  └─ code execution ─────> run_bash/run_python ─> isolated sandbox sidecar
 ```
 
 The coordinator delegates to fresh in-process Harness agents with separate personas and tool allowlists. `get_uk_weather` uses Open-Meteo for current UK conditions and rough built-in monthly estimates for five cities. `suggest_uk_activities` returns explicitly fictional suggestions for those cities based on weather and season. The old search gateway and unrelated example tools were removed.

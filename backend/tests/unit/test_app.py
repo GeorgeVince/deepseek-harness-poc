@@ -93,6 +93,8 @@ def test_mcp_server_exposes_only_specialist_tools() -> None:
         async with Client(server) as client:
             assert {tool.name for tool in await client.list_tools()} == {
                 "get_uk_weather",
+                "run_bash",
+                "run_python",
                 "suggest_uk_activities",
             }
             weather = await client.call_tool("get_uk_weather", {"location": "Edinburgh", "month": "January"})
