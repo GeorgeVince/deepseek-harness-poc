@@ -19,4 +19,4 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql+psycopg://chatbot:chatbot@postgres/chatbot
+      DATABASE_URL: postgresql://chatbot:chatbot@postgres/chatbot

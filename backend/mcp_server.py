@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """FastMCP gateway that discovers private Python tools and exposes search/call."""
 
-from __future__ import annotations
-
 import re
 import secrets
 from datetime import datetime, timezone

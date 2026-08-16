@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Browser chat backed by DeepSeek Harness and PostgreSQL."""
 
-from __future__ import annotations
-
 import argparse
 import json
 import os
@@ -208,6 +206,7 @@ def main() -> None:
 
     load_dotenv(PROJECT_ROOT / ".env")
     provider, model = llm_config(os.environ)
+    database.initialize()
     tracer_provider = telemetry.configure()
 
     session_root = PROJECT_ROOT / ".dsh" / "sessions"

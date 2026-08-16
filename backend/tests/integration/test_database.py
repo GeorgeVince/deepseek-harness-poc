@@ -1,11 +1,10 @@
 import uuid
 
-import sqlalchemy as sa
-
 import database
 
 
 def test_database_round_trip() -> None:
+    database.initialize()
     created = database.create_session()
     session_id = uuid.UUID(created["id"])
 
@@ -22,5 +21,5 @@ def test_database_round_trip() -> None:
         ]
         assert created["id"] in {session["id"] for session in database.list_sessions()}
     finally:
-        with database.engine().begin() as connection:
-            connection.execute(sa.delete(database.sessions).where(database.sessions.c.id == session_id))
+        with database.connect() as connection:
+            connection.execute("DELETE FROM sessions WHERE id = %s", (session_id,))

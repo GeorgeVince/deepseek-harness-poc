@@ -1,0 +1,6 @@
+shrink: SQLAlchemy and Alembic manage five fixed queries and one schema. Use the already-required psycopg driver plus idempotent startup DDL; restore migrations when a second schema version exists. [backend/database.py, backend/migrations/, backend/alembic.ini, backend/pyproject.toml, Dockerfile]
+delete: add_message asks PostgreSQL to return a row that no caller consumes. Drop RETURNING and return nothing. [backend/database.py]
+native: add_message validates an internal role against the same PostgreSQL CHECK constraint. Let the database constraint enforce it. [backend/database.py]
+delete: postponed annotation imports do nothing on the supported Python versions and these modules have no forward references. Remove them. [backend/app.py, backend/mcp_server.py, backend/telemetry.py]
+delete: Phoenix's gRPC host port is unused and PHOENIX_PROJECT repeats telemetry.py's default. Remove both Compose settings. [compose.yml]
+net: -130 lines, -2 deps possible.
