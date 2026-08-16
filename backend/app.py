@@ -83,6 +83,19 @@ def resumed_prompt(message: str, history: list[dict[str, Any]]) -> str:
     return f"Continue the prior conversation below.\n\n{json.dumps(transcript)}\n\nCurrent user message:\n{message}"
 
 
+def _public_tool_arguments(name: str, arguments: object) -> str:
+    if name.rsplit("__", 1)[-1] not in {"run_bash", "run_python"}:
+        return arguments if isinstance(arguments, str) else json.dumps(arguments, separators=(",", ":"))
+    try:
+        parsed = json.loads(arguments) if isinstance(arguments, str) else arguments
+    except (TypeError, json.JSONDecodeError):
+        parsed = None
+    purpose = parsed.get("purpose") if isinstance(parsed, dict) else None
+    if not isinstance(purpose, str) or not purpose.strip():
+        purpose = "Running a sandbox task"
+    return json.dumps({"purpose": purpose.strip()}, separators=(",", ":"))
+
+
 def browser_event(notification: Notification) -> tuple[str, dict[str, Any]] | None:
     """Turn useful Harness notifications into the browser's small event vocabulary."""
     if notification.method != "session.event":
@@ -98,9 +111,7 @@ def browser_event(notification: Notification) -> tuple[str, dict[str, Any]] | No
         name = data.get("name")
         if not isinstance(name, str) or not name:
             name = "tool"
-        arguments = data.get("arguments")
-        if not isinstance(arguments, str):
-            arguments = json.dumps(arguments, separators=(",", ":"))
+        arguments = _public_tool_arguments(name, data.get("arguments"))
         return "tool_call", {"id": call_id, "name": name, "arguments": arguments}
     if kind == "tool/result":
         output, is_error, call_id = telemetry._tool_output(data)

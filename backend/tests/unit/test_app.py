@@ -15,7 +15,7 @@ from pydantic import ValidationError
 import telemetry
 from app import ChatPayload, app, browser_event, llm_config, process_upload, resumed_prompt, sse_frame, workbook_name, workspace_files
 from database import _title
-from mcp_server import server
+from mcp_server import _purpose, _workbook_artifacts, server
 
 
 def test_llm_config_accepts_exactly_one_credential() -> None:
@@ -101,6 +101,18 @@ def test_harness_events_become_browser_sse() -> None:
     }})
 
     assert browser_event(call) == ("tool_call", {"id": "call-1", "name": "get_uk_weather", "arguments": '{"location":"Edinburgh"}'})
+    sandbox_call = Notification("session.event", {"event": {
+        "type": "tool/call", "data": {
+            "callId": "call-2",
+            "name": "mcp__python__run_python",
+            "arguments": '{"purpose":"Inspecting the workbook headers","code":"print(123)"}',
+        },
+    }})
+    assert browser_event(sandbox_call) == ("tool_call", {
+        "id": "call-2",
+        "name": "mcp__python__run_python",
+        "arguments": '{"purpose":"Inspecting the workbook headers"}',
+    })
     assert browser_event(result) == ("tool_result", {"id": "call-1", "result": "found", "is_error": False})
     assert browser_event(assistant) == ("assistant", {"text": "Done"})
     assert sse_frame("done", {"response": "Hi\nthere"}) == b'event: done\ndata: {"response":"Hi\\nthere"}\n\n'
@@ -140,15 +152,29 @@ def test_harness_events_become_only_llm_and_tool_spans() -> None:
     assert all("http.route" not in span.attributes and "db.system" not in span.attributes for span in spans)
 
 
+def test_sandbox_purposes_and_workbook_artifacts() -> None:
+    assert _purpose(" Inspecting workbook headers ") == "Inspecting workbook headers"
+    with pytest.raises(ValueError, match="purpose"):
+        _purpose(" ")
+    before = {"source.xlsx": (100, 1)}
+    after = {"source.xlsx": (100, 1), "result.xlsx": (250, 2)}
+    assert _workbook_artifacts(before, after) == [
+        {"name": "result.xlsx", "size": 250, "change": "created"}
+    ]
+
+
 def test_mcp_server_exposes_only_specialist_tools() -> None:
     async def check() -> None:
         async with Client(server) as client:
-            assert {tool.name for tool in await client.list_tools()} == {
+            tools = {tool.name: tool for tool in await client.list_tools()}
+            assert set(tools) == {
                 "get_uk_weather",
                 "run_bash",
                 "run_python",
                 "suggest_uk_activities",
             }
+            assert tools["run_bash"].inputSchema["required"] == ["purpose", "command"]
+            assert tools["run_python"].inputSchema["required"] == ["purpose", "code"]
             weather = await client.call_tool("get_uk_weather", {"location": "Edinburgh", "month": "January"})
             assert weather.data["estimated_average_c"] == 4
             activities = await client.call_tool("suggest_uk_activities", {

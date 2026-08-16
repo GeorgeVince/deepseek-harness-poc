@@ -5,6 +5,7 @@ import json
 import os
 import socket
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Literal
 from urllib.parse import urlencode
 from urllib.request import urlopen
@@ -109,6 +110,34 @@ def _get_json(url: str) -> dict:
         raise RuntimeError("weather service is unavailable") from error
 
 
+def _purpose(value: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError("purpose must contain 1 to 200 characters")
+    value = value.strip()
+    if not value or len(value) > 200:
+        raise ValueError("purpose must contain 1 to 200 characters")
+    return value
+
+
+def _workbooks(root: Path | None = None) -> dict[str, tuple[int, int]]:
+    files = {}
+    for path in (root or Path.cwd()).glob("*.xlsx"):
+        if path.is_file() and not path.is_symlink():
+            info = path.stat()
+            files[path.name] = (info.st_size, info.st_mtime_ns)
+    return files
+
+
+def _workbook_artifacts(
+    before: dict[str, tuple[int, int]], after: dict[str, tuple[int, int]]
+) -> list[dict]:
+    return [
+        {"name": name, "size": info[0], "change": "created" if name not in before else "updated"}
+        for name, info in sorted(after.items())
+        if before.get(name) != info
+    ]
+
+
 def _run_sandboxed(kind: str, code: str, timeout_seconds: int) -> dict:
     if not isinstance(timeout_seconds, int) or not 1 <= timeout_seconds <= 30:
         raise ValueError("timeout_seconds must be between 1 and 30")
@@ -184,16 +213,29 @@ def get_uk_weather(location: str, month: str | None = None) -> dict:
     }
 
 
-@server.tool
-def run_bash(command: str, timeout_seconds: int = 30) -> dict:
-    """Run a Bash command in the isolated, credential-free workspace sidecar."""
-    return _run_sandboxed("bash", command, timeout_seconds)
+def _run_with_artifacts(kind: str, purpose: str, code: str, timeout_seconds: int) -> dict:
+    _purpose(purpose)
+    before = _workbooks()
+    result = _run_sandboxed(kind, code, timeout_seconds)
+    if result.get("timed_out"):
+        raise RuntimeError("sandbox execution timed out")
+    if result.get("exit_code") != 0:
+        raise RuntimeError(result.get("stderr") or "sandbox execution failed")
+    if artifacts := _workbook_artifacts(before, _workbooks()):
+        result["artifacts"] = artifacts
+    return result
 
 
 @server.tool
-def run_python(code: str, timeout_seconds: int = 30) -> dict:
-    """Run Python in the isolated workspace. Formualizer 0.8.4 is installed for XLSX: use formualizer.load_workbook(path) or Workbook(), then write Workbook.to_xlsx_bytes() to a new /workspace file."""
-    return _run_sandboxed("python", code, timeout_seconds)
+def run_bash(purpose: str, command: str, timeout_seconds: int = 30) -> dict:
+    """Run Bash in the isolated workspace. Purpose is a brief user-facing explanation of what this call does and why; do not include code or private reasoning."""
+    return _run_with_artifacts("bash", purpose, command, timeout_seconds)
+
+
+@server.tool
+def run_python(purpose: str, code: str, timeout_seconds: int = 30) -> dict:
+    """Run Python in the isolated workspace. Purpose is a brief user-facing explanation of what this call does and why; do not include code or private reasoning. Formualizer 0.8.4 is installed for XLSX: use formualizer.load_workbook(path) or Workbook(), then write Workbook.to_xlsx_bytes() to a new /workspace file."""
+    return _run_with_artifacts("python", purpose, code, timeout_seconds)
 
 
 @server.tool

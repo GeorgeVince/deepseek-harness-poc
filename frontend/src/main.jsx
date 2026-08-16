@@ -78,12 +78,29 @@ const formatValue = (value) => {
 
 function ToolCall({ toolName, args, result, isError }) {
   const name = toolName.replace("mcp__python__", "");
+  const purpose = typeof args?.purpose === "string" ? args.purpose : "";
+  const resultData = result === undefined ? {} : parseArgs(result);
+  const artifacts = Array.isArray(resultData.artifacts) ? resultData.artifacts : [];
+  const status = result === undefined ? "Running" : isError ? "Failed" : "Completed";
   return (
-    <details className={`tool-call${isError ? " tool-error" : ""}`} open={result === undefined}>
-      <summary><span className="trace-label">Decision trace</span> {result === undefined ? "Running" : isError ? "Failed" : "Completed"} {name}</summary>
-      <pre>{formatValue(args)}</pre>
-      {result !== undefined && <pre className="tool-result">{formatValue(result)}</pre>}
-    </details>
+    <div className={`tool-call${isError ? " tool-error" : ""}`}>
+      <div className="tool-heading" aria-live="polite">
+        <span className="trace-label">Activity</span>
+        <strong>{status}</strong> {purpose || name.replaceAll("_", " ")}
+      </div>
+      {artifacts.length > 0 && <div className="tool-artifacts">
+        {artifacts.map((artifact) => (
+          <a key={artifact.name} href={`/api/files/${encodeURIComponent(artifact.name)}`} download>
+            {artifact.change === "created" ? "Created" : "Updated"} {artifact.name} · {Math.ceil(artifact.size / 1024)} KB
+          </a>
+        ))}
+      </div>}
+      {(!purpose || result !== undefined) && <details className="technical-details" open={Boolean(isError)}>
+        <summary>Technical details</summary>
+        {!purpose && <pre>{formatValue(args)}</pre>}
+        {result !== undefined && <pre className="tool-result">{formatValue(result)}</pre>}
+      </details>}
+    </div>
   );
 }
 
