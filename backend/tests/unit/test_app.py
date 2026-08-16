@@ -54,6 +54,16 @@ def test_harness_events_become_browser_sse() -> None:
     assert sse_frame("done", {"response": "Hi\nthere"}) == b'event: done\ndata: {"response":"Hi\\nthere"}\n\n'
 
 
+def test_telemetry_keeps_descendant_agent_events() -> None:
+    notifications = [
+        Notification("session.event", {"sessionId": "root", "event": {"type": "turn/start"}}),
+        Notification("subagent.started", {"parentSessionId": "root", "childSessionId": "child"}),
+        Notification("session.event", {"sessionId": "child", "event": {"type": "tool/call"}}),
+    ]
+    events = telemetry._notification_events(notifications)
+    assert [event["_agent_session_id"] for event in events] == ["root", "child"]
+
+
 def test_harness_events_become_only_llm_and_tool_spans() -> None:
     exporter = InMemorySpanExporter()
     provider = TracerProvider()
@@ -74,6 +84,7 @@ def test_harness_events_become_only_llm_and_tool_spans() -> None:
     assert [span.attributes["openinference.span.kind"] for span in spans] == ["LLM", "TOOL", "LLM"]
     assert spans[0].attributes["llm.token_count.total"] == 15
     assert spans[1].attributes["tool.name"] == "get_uk_weather"
+    assert spans[1].attributes["agent.session.id"] == "root"
     assert all("http.route" not in span.attributes and "db.system" not in span.attributes for span in spans)
 
 

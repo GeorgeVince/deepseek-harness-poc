@@ -44,7 +44,7 @@ def run_agent(
 
     with TRACER.start_as_current_span("DeepSeek Harness", attributes=attributes) as span:
         result = harness.run(prompt, session_id=runtime_session_id, on_notification=on_notification)
-        _record_children(result.events, prompt, session_id, capture_content)
+        _record_children(_notification_events(result.notifications), prompt, session_id, capture_content)
         span.set_attribute("agent.finish_reason", result.finish_reason or "unknown")
         if capture_content:
             span.set_attribute(SpanAttributes.OUTPUT_VALUE, result.final_response)
@@ -56,13 +56,30 @@ def run_agent(
         return result
 
 
+def _notification_events(notifications: list[Notification]) -> list[dict[str, Any]]:
+    """Return events from the coordinator and every descendant agent session."""
+    events: list[dict[str, Any]] = []
+    for notification in notifications:
+        event = notification.payload.get("event")
+        agent_session_id = notification.payload.get("sessionId")
+        if notification.method != "session.event" or not isinstance(event, dict):
+            continue
+        event = dict(event)
+        event["_agent_session_id"] = str(agent_session_id or "unknown")
+        events.append(event)
+    return events
+
+
 def _record_children(events: list[dict[str, Any]], prompt: str, session_id: str, capture_content: bool) -> None:
-    step_starts: dict[tuple[Any, Any], int] = {}
+    step_starts: dict[tuple[Any, Any, Any], int] = {}
     tool_calls: dict[str, dict[str, Any]] = {}
-    llm_inputs = [prompt]
-    config: dict[str, Any] = {}
+    llm_inputs: dict[str, list[str]] = {}
+    configs: dict[str, dict[str, Any]] = {}
 
     for event in events:
+        agent_session_id = str(event.get("_agent_session_id") or "root")
+        inputs = llm_inputs.setdefault(agent_session_id, [prompt] if not llm_inputs else [])
+        config = configs.setdefault(agent_session_id, {})
         kind = event.get("type")
         data = event.get("data")
         if not isinstance(data, dict):
@@ -70,21 +87,27 @@ def _record_children(events: list[dict[str, Any]], prompt: str, session_id: str,
         if kind == "request/header":
             header = data.get("header")
             if isinstance(header, dict) and isinstance(header.get("config"), dict):
-                config = header["config"]
+                configs[agent_session_id] = header["config"]
         elif kind == "step/start":
-            step_starts[(data.get("turn"), data.get("step"))] = _time(event)
+            step_starts[(agent_session_id, data.get("turn"), data.get("step"))] = _time(event)
         elif kind == "assistant/message":
-            _record_llm(event, data, step_starts, llm_inputs, config, session_id, capture_content)
-            llm_inputs.clear()
+            _record_llm(
+                event, data, step_starts, inputs, config, session_id, agent_session_id, capture_content
+            )
+            inputs.clear()
         elif kind == "tool/call" and isinstance(data.get("callId"), str):
-            tool_calls[data["callId"]] = {"event": event, "data": data}
+            tool_calls[data["callId"]] = {
+                "event": event,
+                "data": data,
+                "agent_session_id": agent_session_id,
+            }
         elif kind == "tool/result":
             output, is_error, call_id = _tool_output(data)
             call = tool_calls.get(call_id)
             if call is not None:
                 _record_tool(call, event, output, is_error, session_id, capture_content)
             if output:
-                llm_inputs.append(output)
+                inputs.append(output)
 
 
 def _record_llm(
@@ -94,6 +117,7 @@ def _record_llm(
     inputs: list[str],
     config: dict[str, Any],
     session_id: str,
+    agent_session_id: str,
     capture_content: bool,
 ) -> None:
     message = data.get("message")
@@ -109,6 +133,7 @@ def _record_llm(
         SpanAttributes.LLM_SYSTEM: provider,
         SpanAttributes.LLM_MODEL_NAME: model,
         SpanAttributes.LLM_INVOCATION_PARAMETERS: json.dumps(config),
+        "agent.session.id": agent_session_id,
     }
     input_tokens = usage.get("inputTokens")
     output_tokens = usage.get("outputTokens")
@@ -128,7 +153,7 @@ def _record_llm(
     span = TRACER.start_span(
         f"{provider} chat",
         attributes=attributes,
-        start_time=step_starts.get((data.get("turn"), data.get("step"))),
+        start_time=step_starts.get((agent_session_id, data.get("turn"), data.get("step"))),
     )
     span.set_status(Status(StatusCode.OK))
     span.end(end_time=_time(event))
@@ -149,6 +174,7 @@ def _record_tool(
         SpanAttributes.SESSION_ID: session_id,
         SpanAttributes.TOOL_NAME: name,
         "tool.call.id": str(data.get("callId")),
+        "agent.session.id": str(call.get("agent_session_id") or "unknown"),
     }
     if capture_content:
         attributes[SpanAttributes.INPUT_VALUE] = str(data.get("arguments") or "")
